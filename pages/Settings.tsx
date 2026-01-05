@@ -1,15 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
 import { 
-  Store, 
-  Settings as SettingsIcon, 
   Save, 
   MapPin,
   Phone,
   Receipt,
   CheckCircle2,
   AlertCircle,
-  Trash2,
   RefreshCw
 } from 'lucide-react';
 import { Settings as SettingsType } from '../types';
@@ -30,7 +27,6 @@ const Settings: React.FC<SettingsProps> = ({ settings, onUpdate }) => {
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isWiping, setIsWiping] = useState(false);
 
   useEffect(() => {
     if (settings) {
@@ -86,57 +82,11 @@ const Settings: React.FC<SettingsProps> = ({ settings, onUpdate }) => {
     }
   };
 
-  const wipeAllData = async () => {
-    const confirmation = window.confirm("CRITICAL WARNING: This will permanently WIPE ALL data (Products, Sales, Expenses, Suppliers, Shifts). This action CANNOT be undone. Are you absolutely sure?");
-    if (!confirmation) return;
-
-    const secondConfirmation = window.prompt("Type 'DELETE EVERYTHING' to confirm total system wipe:");
-    if (secondConfirmation !== 'DELETE EVERYTHING') return;
-
-    setIsWiping(true);
-    try {
-      // Step-by-step deletion following foreign key hierarchy (Child to Parent)
-      const epochDate = '1970-01-01T00:00:00Z';
-      
-      console.log("Starting full system wipe sequence...");
-      
-      // 1. Delete items inside sales first (Child of Sales)
-      await supabase.from('sale_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-      
-      // 2. Delete sales records (Child of Shifts)
-      await supabase.from('sales').delete().gt('created_at', epochDate);
-      
-      // 3. Delete expense records (Child of Shifts)
-      await supabase.from('expenses').delete().gt('created_at', epochDate);
-      
-      // 4. Delete shift sessions (Child of Users)
-      await supabase.from('shifts').delete().gt('created_at', epochDate);
-      
-      // 5. Delete products (Child of Suppliers)
-      await supabase.from('products').delete().gt('created_at', epochDate);
-      
-      // 6. Delete supplier transaction history
-      await supabase.from('supplier_payments').delete().gt('created_at', epochDate);
-      
-      // 7. Finally delete suppliers
-      await supabase.from('suppliers').delete().gt('created_at', epochDate);
-      
-      console.log("System wipe complete.");
-      alert("All business data has been purged. The application will now refresh.");
-      window.location.reload();
-    } catch (err: any) {
-      console.error("Data Purge Error:", err);
-      alert(`Wipe Failed: ${err.message}. Check browser console for details.`);
-    } finally {
-      setIsWiping(false);
-    }
-  };
-
   return (
     <div className="max-w-4xl mx-auto space-y-12 animate-in fade-in duration-500 pb-20">
       <header>
         <h1 className="text-3xl font-black text-slate-900 tracking-tighter leading-none mb-2 uppercase">System Configuration</h1>
-        <p className="text-slate-500 font-medium text-sm">Manage business identity, tax compliance, and data lifecycle.</p>
+        <p className="text-slate-500 font-medium text-sm">Manage business identity and tax compliance settings.</p>
       </header>
 
       {error && (
@@ -243,31 +193,6 @@ const Settings: React.FC<SettingsProps> = ({ settings, onUpdate }) => {
           </button>
         </div>
       </form>
-
-      {/* Danger Zone */}
-      <div className="mt-20 border-t border-slate-200 pt-16">
-        <div className="bg-rose-50 border border-rose-100 p-8 md:p-10 rounded-[3rem] space-y-6">
-           <div className="flex items-center gap-4">
-              <div className="p-3 bg-rose-600 text-white rounded-xl">
-                 <Trash2 size={24} />
-              </div>
-              <div>
-                 <h3 className="text-lg font-black text-rose-900 uppercase tracking-tight">System Data Purge</h3>
-                 <p className="text-xs font-bold text-rose-500 uppercase tracking-widest">DANGER ZONE • DESTRUCTIVE ACTION</p>
-              </div>
-           </div>
-           <p className="text-sm font-medium text-rose-800 max-w-2xl leading-relaxed">
-             Wiping all data will reset the system to a clean state. This deletes all transaction history, expenses, supplier ledgers, and products. This action follows database referential integrity rules.
-           </p>
-           <button 
-             onClick={wipeAllData}
-             disabled={isWiping}
-             className="px-10 py-5 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-rose-200 transition-all flex items-center gap-3 active:scale-95 disabled:opacity-50"
-           >
-             {isWiping ? <RefreshCw className="animate-spin" size={18} /> : <><Trash2 size={18} /> Wipe System Data</>}
-           </button>
-        </div>
-      </div>
     </div>
   );
 };
