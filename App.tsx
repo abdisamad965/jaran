@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
@@ -50,23 +49,47 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const clearSessionAndRestart = async () => {
+    console.warn("Invalid or expired session. Clearing local session data...");
+    await supabase.auth.signOut();
+    localStorage.removeItem('sb-qjlzzppimrzthgrpjdeu-auth-token');
+    setAuthUser(null);
+    setUser(null);
+    setIsProfileReady(false);
+    setLoading(false);
+  };
+
   useEffect(() => {
     const initialize = async () => {
       setLoading(true);
-      
-      // Load settings
-      const { data: sets } = await supabase.from('settings').select('*').maybeSingle();
-      if (sets) setSettings(sets);
-      
-      // Check session
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (session?.user) {
-        setAuthUser(session.user);
-        await checkProfile(session.user.id);
+      try {
+        // Load database settings if available
+        const { data: sets } = await supabase.from('settings').select('*').maybeSingle();
+        if (sets) setSettings(sets);
+        
+        // Check session with explicit error handling for Refresh Token issues
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError) {
+          if (sessionError.message.includes("Refresh Token")) {
+            await clearSessionAndRestart();
+            return;
+          }
+          throw sessionError;
+        }
+
+        if (session?.user) {
+          setAuthUser(session.user);
+          await checkProfile(session.user.id);
+        }
+      } catch (err: any) {
+        console.error("Initialization error:", err);
+        if (err.message?.includes("Refresh Token")) {
+          await clearSessionAndRestart();
+        }
+      } finally {
+        setLoading(false);
       }
-      
-      setLoading(false);
     };
 
     initialize();
@@ -77,7 +100,7 @@ const App: React.FC = () => {
         setLoading(true);
         await checkProfile(session.user.id);
         setLoading(false);
-      } else if (event === 'SIGNED_OUT') {
+      } else if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED' === false) {
         setAuthUser(null);
         setUser(null);
         setIsProfileReady(false);
@@ -92,12 +115,11 @@ const App: React.FC = () => {
     return (
       <div className="flex h-screen w-screen flex-col items-center justify-center bg-slate-50 gap-4">
         <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
-        <p className="text-slate-500 font-medium animate-pulse">Establishing session...</p>
+        <p className="text-slate-500 font-medium animate-pulse">Syncing environment...</p>
       </div>
     );
   }
 
-  // If we have an auth session but the DB profile record isn't complete
   if (authUser && !isProfileReady) {
     return (
       <CompleteProfile 
@@ -115,7 +137,6 @@ const App: React.FC = () => {
         <main className={`flex-1 overflow-auto p-4 md:p-8 ${user ? '' : 'flex items-center justify-center p-0'}`}>
           <Routes>
             <Route path="/login" element={!authUser ? <Login /> : <Navigate to="/" />} />
-            
             <Route path="/" element={user ? <Dashboard /> : <Navigate to="/login" />} />
             <Route path="/pos" element={user ? <POS user={user} settings={settings} /> : <Navigate to="/login" />} />
             <Route path="/inventory" element={user ? <Inventory /> : <Navigate to="/login" />} />
@@ -124,8 +145,6 @@ const App: React.FC = () => {
             <Route path="/reports" element={user?.role === 'admin' ? <Reports /> : <Navigate to="/" />} />
             <Route path="/shifts" element={user ? <Shifts user={user} /> : <Navigate to="/login" />} />
             <Route path="/settings" element={user?.role === 'admin' ? <Settings settings={settings} onUpdate={setSettings} /> : <Navigate to="/" />} />
-            
-            {/* Catch-all to handle undefined routes based on auth state */}
             <Route path="*" element={<Navigate to={authUser ? "/" : "/login"} />} />
           </Routes>
         </main>

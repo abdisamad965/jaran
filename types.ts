@@ -1,4 +1,3 @@
-
 export type Role = 'admin' | 'cashier';
 
 export interface User {
@@ -22,9 +21,13 @@ export interface Settings {
   id: string;
   store_name: string;
   tax_rate: number;
-  phone?: string;
-  location?: string;
-  receipt_template: any;
+  // phone and address are now handled within receipt_template to avoid DB schema conflicts
+  receipt_template: {
+    phone?: string;
+    address?: string;
+    header_message?: string;
+    footer_message?: string;
+  };
   shift_closing_enabled: boolean;
 }
 

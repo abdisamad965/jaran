@@ -13,7 +13,10 @@ import {
   Printer,
   Clock,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  History,
+  Undo2,
+  X
 } from 'lucide-react';
 import { Product, CartItem, User, Settings, Shift } from '../types';
 import { useNavigate } from 'react-router-dom';
@@ -29,7 +32,9 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeShift, setActiveShift] = useState<Shift | null>(null);
+  const [recentSales, setRecentSales] = useState<any[]>([]);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const [showRecentSales, setShowRecentSales] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'mpesa'>('cash');
   const [checkoutComplete, setCheckoutComplete] = useState(false);
   const [lastSale, setLastSale] = useState<any>(null);
@@ -42,6 +47,16 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
   const fetchProducts = async () => {
     const { data } = await supabase.from('products').select('*').order('name');
     if (data) setProducts(data);
+  };
+
+  const fetchRecentSales = async (shiftId: string) => {
+    const { data } = await supabase
+      .from('sales')
+      .select('*, sale_items(*, product:products(name))')
+      .eq('shift_id', shiftId)
+      .order('sale_date', { ascending: false })
+      .limit(5);
+    if (data) setRecentSales(data);
   };
 
   const ensureValidShift = async () => {
@@ -63,12 +78,60 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
         await supabase.from('shifts').update({ closed: true, end_time: new Date().toISOString(), total_sales: totalAmt }).eq('id', currentShift.id);
         const { data: newShift } = await supabase.from('shifts').insert({ user_id: user.id, start_time: new Date().toISOString(), total_sales: 0, total_cash: 0, total_card: 0, closed: false }).select().single();
         setActiveShift(newShift);
+        fetchRecentSales(newShift.id);
       } else {
         setActiveShift(currentShift);
+        fetchRecentSales(currentShift.id);
       }
     } else {
       const { data: newShift } = await supabase.from('shifts').insert({ user_id: user.id, start_time: new Date().toISOString(), total_sales: 0, total_cash: 0, total_card: 0, closed: false }).select().single();
       setActiveShift(newShift);
+      fetchRecentSales(newShift.id);
+    }
+  };
+
+  const handleVoidSale = async (sale: any) => {
+    if (!confirm(`VOID Transaction #${sale.id.slice(0,8).toUpperCase()}? Stock will be restored.`)) return;
+    
+    setIsCheckingOut(true); // Reuse loading state
+    try {
+      // 1. Restore Stock
+      for (const item of sale.sale_items) {
+        const { data: prod } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
+        if (prod) {
+          await supabase.from('products').update({ stock_quantity: prod.stock_quantity + item.quantity }).eq('id', item.product_id);
+        }
+      }
+
+      // 2. Delete Sale
+      await supabase.from('sale_items').delete().eq('sale_id', sale.id);
+      await supabase.from('sales').delete().eq('id', sale.id);
+
+      // 3. Update Shift Totals
+      if (activeShift) {
+        const { data: remainingSales } = await supabase.from('sales').select('total_amount, payment_method').eq('shift_id', activeShift.id);
+        const newTotal = remainingSales?.reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
+        const newCash = remainingSales?.filter(s => s.payment_method === 'cash').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
+        const newCard = remainingSales?.filter(s => s.payment_method === 'card').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
+        const newMpesa = remainingSales?.filter(s => s.payment_method === 'mpesa').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
+
+        await supabase.from('shifts').update({
+          total_sales: newTotal,
+          total_cash: newCash,
+          total_card: newCard,
+          total_mpesa: newMpesa
+        }).eq('id', activeShift.id);
+        
+        setActiveShift({ ...activeShift, total_sales: newTotal });
+        fetchRecentSales(activeShift.id);
+      }
+
+      fetchProducts();
+      alert("Transaction voided successfully.");
+    } catch (err: any) {
+      alert("Void failed: " + err.message);
+    } finally {
+      setIsCheckingOut(false);
     }
   };
 
@@ -132,6 +195,7 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
       await supabase.from('shifts').update(updatedTotals).eq('id', activeShift.id);
       
       setActiveShift({ ...st, ...updatedTotals });
+      fetchRecentSales(st.id);
       setLastSale({ ...sale, items: cart });
       setCheckoutComplete(true);
       setCart([]);
@@ -146,27 +210,41 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
   const printReceipt = () => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
+
+    const localConfigStr = localStorage.getItem('jaran_biz_config');
+    let bizName = settings?.store_name || 'JARAN CLEANING SERVICE';
+    let bizPhone = '';
+    let bizAddress = '';
+
+    if (localConfigStr) {
+      try {
+        const parsed = JSON.parse(localConfigStr);
+        bizName = parsed.store_name || bizName;
+        bizPhone = parsed.phone || '';
+        bizAddress = parsed.address || '';
+      } catch (e) {
+        console.error("Local config parse error");
+      }
+    }
+
     const receiptHtml = `
       <html>
         <head>
-          <style>@page { margin: 0; } body { font-family: 'Courier New', monospace; width: 80mm; margin: 0; padding: 12mm 6mm; font-size: 13px; line-height: 1.5; } .header { text-align: center; margin-bottom: 18px; } .business { font-size: 16px; font-weight: bold; text-transform: uppercase; } .divider { border-top: 1px dashed #000; margin: 12px 0; } .item { display: flex; justify-content: space-between; margin-bottom: 6px; } .totals { font-weight: bold; margin-top: 12px; border-top: 1px solid #000; padding-top: 8px; } .footer { text-align: center; margin-top: 40px; font-size: 11px; font-weight: bold; }</style>
+          <style>@page { margin: 0; } body { font-family: 'Courier New', monospace; width: 80mm; margin: 0; padding: 12mm 6mm; font-size: 13px; line-height: 1.5; color: #000; } .header { text-align: center; margin-bottom: 20px; } .business { font-size: 16px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px; } .meta { font-size: 11px; margin-bottom: 2px; } .divider { border-top: 1px dashed #000; margin: 12px 0; } .item { display: flex; justify-content: space-between; margin-bottom: 6px; } .totals { font-weight: bold; margin-top: 12px; border-top: 1px solid #000; padding-top: 8px; } .footer { text-align: center; margin-top: 40px; font-size: 11px; font-weight: bold; text-transform: uppercase; }</style>
         </head>
         <body>
-          <div class="header">
-            <div class="business">${settings?.store_name || 'JARAN CLEANING'}</div>
-            ${settings?.location ? `<div>📍 ${settings.location}</div>` : ''}
-            ${settings?.phone ? `<div>📞 ${settings.phone}</div>` : ''}
-          </div>
+          <div class="header"><div class="business">${bizName}</div>${bizAddress ? `<div class="meta">📍 ${bizAddress}</div>` : ''}${bizPhone ? `<div class="meta">📞 ${bizPhone}</div>` : ''}</div>
           <div class="divider"></div>
-          <div>DATE: ${new Date(lastSale.sale_date).toLocaleString()}</div>
-          <div>TRANSACTION: ${lastSale.id.slice(0,8).toUpperCase()}</div>
+          <div class="meta">DATE: ${new Date(lastSale.sale_date).toLocaleString()}</div>
+          <div class="meta">ID: ${lastSale.id.slice(0,8).toUpperCase()}</div>
+          <div class="meta">OPERATOR: ${user.name.toUpperCase()}</div>
           <div class="divider"></div>
           ${lastSale.items.map((i: any) => `<div class="item"><span>${i.name} x${i.cartQuantity}</span><span>${(i.price * i.cartQuantity).toLocaleString()}</span></div>`).join('')}
           <div class="divider"></div>
-          <div class="totals"><div class="item"><span>SUBTOTAL</span><span>KSh ${subtotal.toLocaleString()}</span></div><div class="item" style="font-size: 16px;"><span>TOTAL</span><span>KSh ${lastSale.total_amount.toLocaleString()}</span></div></div>
+          <div class="totals"><div class="item"><span>SUBTOTAL</span><span>KSh ${Number(lastSale.total_amount).toLocaleString()}</span></div><div class="item" style="font-size: 16px;"><span>TOTAL DUE</span><span>KSh ${Number(lastSale.total_amount).toLocaleString()}</span></div></div>
           <div class="divider"></div>
-          <div class="item"><span>PAID VIA</span><span>${lastSale.payment_method.toUpperCase()}</span></div>
-          <div class="footer"><p>THANK YOU FOR CHOOSING JARAN!</p></div>
+          <div class="item"><span>METHOD</span><span>${lastSale.payment_method.toUpperCase()}</span></div>
+          <div class="footer"><p>*** THANK YOU FOR YOUR BUSINESS ***</p><p>JARAN CLEANING SERVICE</p></div>
           <script>window.onload = () => { window.print(); setTimeout(() => window.close(), 500); }</script>
         </body>
       </html>
@@ -176,7 +254,8 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
   };
 
   return (
-    <div className="max-w-[1700px] mx-auto flex flex-col lg:flex-row gap-6 h-[calc(100vh-120px)] min-h-[550px] animate-in fade-in duration-500 pb-4">
+    <div className="max-w-[1700px] mx-auto flex flex-col lg:flex-row gap-6 h-[calc(100vh-120px)] min-h-[550px] animate-in fade-in duration-500 pb-4 relative">
+      
       {/* Product Grid */}
       <div className="flex-1 flex flex-col min-h-0 bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden relative">
         <div className="px-8 py-6 border-b border-slate-50 flex items-center justify-between shrink-0">
@@ -190,9 +269,18 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <div className="hidden sm:flex items-center gap-4 bg-blue-50 px-6 py-3 rounded-xl border border-blue-100">
-             <div className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse"></div>
-             <p className="text-[10px] font-black text-blue-700 uppercase tracking-widest leading-none">Live Terminal</p>
+          <div className="flex items-center gap-3">
+             <button 
+               onClick={() => setShowRecentSales(true)}
+               className="p-4 bg-slate-50 text-slate-400 hover:text-blue-600 rounded-2xl border border-slate-100 transition-all hover:bg-blue-50"
+               title="Recent Sales History"
+             >
+                <History size={20} />
+             </button>
+             <div className="hidden sm:flex items-center gap-4 bg-blue-50 px-6 py-3 rounded-xl border border-blue-100">
+               <div className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse"></div>
+               <p className="text-[10px] font-black text-blue-700 uppercase tracking-widest leading-none">Live Terminal</p>
+             </div>
           </div>
         </div>
 
@@ -296,6 +384,49 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
         </div>
       </div>
 
+      {/* Recent Sales Sidebar/Drawer */}
+      {showRecentSales && (
+        <div className="absolute inset-y-0 right-0 w-[400px] bg-white shadow-2xl z-[60] border-l border-slate-100 flex flex-col animate-in slide-in-from-right duration-300 rounded-l-[3rem]">
+          <div className="p-8 border-b border-slate-50 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+               <History className="text-blue-600" size={20} />
+               <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-900">Recent Session Ledger</h3>
+            </div>
+            <button onClick={() => setShowRecentSales(false)} className="p-2 hover:bg-slate-50 rounded-xl text-slate-400">
+              <X size={20} />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+            {recentSales.map(sale => (
+              <div key={sale.id} className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 space-y-4 relative group">
+                <div className="flex justify-between items-start">
+                   <div>
+                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">#{sale.id.slice(0,8).toUpperCase()}</p>
+                     <p className="text-sm font-black text-slate-900 leading-none">KSh {Number(sale.total_amount).toLocaleString()}</p>
+                   </div>
+                   <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-full text-[8px] font-black uppercase text-slate-500">{sale.payment_method}</span>
+                </div>
+                <div className="text-[10px] font-bold text-slate-500 line-clamp-1 italic">
+                  {sale.sale_items?.map((i: any) => i.product?.name).join(', ')}
+                </div>
+                <button 
+                  onClick={() => handleVoidSale(sale)}
+                  disabled={isCheckingOut}
+                  className="w-full py-3 bg-white border border-rose-100 text-rose-500 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-rose-500 hover:text-white transition-all flex items-center justify-center gap-2"
+                >
+                  <Undo2 size={14} /> Void Transaction
+                </button>
+              </div>
+            ))}
+            {recentSales.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-40 text-slate-300 italic text-[10px] font-black uppercase tracking-widest opacity-40">
+                No recent activity.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {checkoutComplete && lastSale && (
         <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[3.5rem] p-10 max-w-lg w-full text-center space-y-8 shadow-2xl animate-in zoom-in duration-300 border border-slate-100">
@@ -311,7 +442,7 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
                <div className="flex justify-between text-[9px] font-black text-slate-400 uppercase tracking-widest"><span>Channel</span><span className="text-slate-900">{lastSale.payment_method.toUpperCase()}</span></div>
                <div className="flex justify-between items-center text-3xl font-black text-slate-900 pt-2">
                   <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Amount</span>
-                  <span>KSh {lastSale.total_amount.toLocaleString()}</span>
+                  <span>KSh {Number(lastSale.total_amount).toLocaleString()}</span>
                </div>
             </div>
 
