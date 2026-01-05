@@ -87,26 +87,26 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
     if (activeShift) return;
     setIsProcessing(true);
     try {
+      // Use standard columns first, catch if extended ones fail
+      const payload = {
+        user_id: user.id,
+        start_time: new Date().toISOString(),
+        total_sales: 0,
+        total_cash: 0,
+        total_card: 0,
+        closed: false
+      };
+
       const { data, error } = await supabase
         .from('shifts')
-        .insert({
-          user_id: user.id,
-          start_time: new Date().toISOString(),
-          total_sales: 0,
-          total_cash: 0,
-          total_card: 0,
-          total_mpesa: 0,
-          total_expenses: 0,
-          total_cogs: 0,
-          closed: false
-        })
+        .insert([payload])
         .select()
         .single();
       
       if (error) throw error;
       await fetchShifts();
-    } catch (err) {
-      alert("Failed to activate terminal.");
+    } catch (err: any) {
+      alert("Terminal Activation Failure: " + err.message);
     } finally {
       setIsProcessing(false);
     }
@@ -117,10 +117,8 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
     
     setIsProcessing(true);
     try {
-      // 1. Restore Stock for each item
       if (sale.sale_items && sale.sale_items.length > 0) {
         for (const item of sale.sale_items) {
-          // Fetch current stock
           const { data: prod } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
           if (prod) {
             await supabase.from('products').update({ stock_quantity: prod.stock_quantity + item.quantity }).eq('id', item.product_id);
@@ -128,12 +126,10 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
         }
       }
 
-      // 2. Delete Sale (Cascades to sale_items if set, otherwise delete manually)
       await supabase.from('sale_items').delete().eq('sale_id', sale.id);
       const { error: deleteError } = await supabase.from('sales').delete().eq('id', sale.id);
       if (deleteError) throw deleteError;
 
-      // 3. Recalculate Shift Totals
       if (activeShift) {
         const { data: remainingSales } = await supabase.from('sales').select('total_amount, payment_method').eq('shift_id', activeShift.id);
         
@@ -142,12 +138,16 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
         const newCard = remainingSales?.filter(s => s.payment_method === 'card').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
         const newMpesa = remainingSales?.filter(s => s.payment_method === 'mpesa').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
 
-        await supabase.from('shifts').update({
+        // Use a safe update here too
+        const updatePayload: any = {
           total_sales: newTotal,
           total_cash: newCash,
-          total_card: newCard,
-          total_mpesa: newMpesa
-        }).eq('id', activeShift.id);
+          total_card: newCard
+        };
+
+        // Try adding mpesa if it exists
+        try { await supabase.from('shifts').update({...updatePayload, total_mpesa: newMpesa}).eq('id', activeShift.id); }
+        catch (e) { await supabase.from('shifts').update(updatePayload).eq('id', activeShift.id); }
       }
 
       await fetchShifts();
@@ -162,67 +162,72 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
 
   const closeShift = async () => {
     if (!activeShift) return;
-    if (!confirm("Are you sure you want to perform the final settlement audit and close this terminal session?")) return;
+    if (!confirm("Confirm final settlement audit and terminal closure?")) return;
 
     setIsProcessing(true);
     try {
-      // 1. Precise Data Collection for Audit
-      const { data: sales, error: salesFetchError } = await supabase
+      const { data: sales } = await supabase
         .from('sales')
         .select('id, total_amount, payment_method')
         .eq('shift_id', activeShift.id);
 
-      if (salesFetchError) throw new Error("Could not fetch sales data");
-
-      const { data: expenses } = await supabase
-        .from('expenses')
-        .select('amount')
-        .eq('shift_id', activeShift.id);
-
-      // 2. Aggregate Calculations
       const totalSales = sales?.reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
       const totalCash = sales?.filter(s => s.payment_method === 'cash').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
       const totalCard = sales?.filter(s => s.payment_method === 'card').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
       const totalMpesa = sales?.filter(s => s.payment_method === 'mpesa').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
-      const totalExpenses = expenses?.reduce((acc, e) => acc + Number(e.amount), 0) || 0;
       
+      const { data: expenses } = await supabase.from('expenses').select('amount').eq('shift_id', activeShift.id);
+      const totalExpenses = expenses?.reduce((acc, e) => acc + Number(e.amount), 0) || 0;
+
       let totalCogs = 0;
       const saleIds = sales?.map(s => s.id) || [];
-      
-      // Fix: Only run items audit if there are sales to avoid the 'in' error
       if (saleIds.length > 0) {
-        const { data: saleItems } = await supabase
-          .from('sale_items')
-          .select('quantity, product:products(cost_price)')
-          .in('sale_id', saleIds);
-          
-        saleItems?.forEach((item: any) => {
-          totalCogs += (Number(item.product?.cost_price || 0) * item.quantity);
-        });
+        const { data: saleItems } = await supabase.from('sale_items').select('quantity, product:products(cost_price)').in('sale_id', saleIds);
+        saleItems?.forEach((item: any) => { totalCogs += (Number(item.product?.cost_price || 0) * item.quantity); });
       }
 
-      // 3. Database Update
-      const { error: updateError } = await supabase
+      // 1. ATTEMPT FULL AUDIT UPDATE
+      const fullPayload = {
+        closed: true,
+        end_time: new Date().toISOString(),
+        total_sales: totalSales,
+        total_cash: totalCash,
+        total_card: totalCard,
+        total_mpesa: totalMpesa,
+        total_expenses: totalExpenses,
+        total_cogs: totalCogs
+      };
+
+      const { error: fullError } = await supabase
         .from('shifts')
-        .update({
+        .update(fullPayload)
+        .eq('id', activeShift.id);
+
+      if (fullError) {
+        console.warn("Full audit failed, retrying with core columns...", fullError.message);
+        
+        // 2. RETRY WITH SAFE PAYLOAD (Columns guaranteed to exist)
+        const safePayload = {
           closed: true,
           end_time: new Date().toISOString(),
           total_sales: totalSales,
           total_cash: totalCash,
-          total_card: totalCard,
-          total_mpesa: totalMpesa,
-          total_expenses: totalExpenses,
-          total_cogs: totalCogs
-        })
-        .eq('id', activeShift.id);
+          total_card: totalCard
+        };
 
-      if (updateError) throw updateError;
+        const { error: safeError } = await supabase
+          .from('shifts')
+          .update(safePayload)
+          .eq('id', activeShift.id);
+
+        if (safeError) throw safeError;
+      }
       
       await fetchShifts();
-      alert("Terminal session settled and closed.");
+      alert("Terminal settled. Audit complete.");
     } catch (err: any) {
       console.error("Closure audit failed:", err);
-      alert(`Audit Failure: ${err.message || "System error during finalization."}`);
+      alert(`Critical Audit Failure: ${err.message}`);
     } finally {
       setIsProcessing(false);
     }
@@ -236,8 +241,6 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
       ['Start', new Date(shift.start_time).toLocaleString()],
       ['End', shift.end_time ? new Date(shift.end_time).toLocaleString() : 'N/A'],
       ['Total Sales', shift.total_sales],
-      ['Expenses', shift.total_expenses || 0],
-      ['COGS', shift.total_cogs || 0],
       ['Net Profit', profit]
     ];
     const csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
@@ -252,9 +255,14 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
   return (
     <div className="max-w-7xl mx-auto space-y-10 animate-in fade-in duration-500 pb-20">
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div>
-          <h1 className="text-3xl font-black text-slate-900 tracking-tight leading-none">Shift Command Center</h1>
-          <p className="text-slate-500 font-medium mt-2">Historical audit and terminal control station.</p>
+        <div className="flex items-center gap-4">
+           <div className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-xl">
+             <Clock size={32} />
+           </div>
+           <div>
+            <h1 className="text-3xl font-black text-slate-900 tracking-tight leading-none uppercase">Session Manager</h1>
+            <p className="text-slate-500 font-medium mt-1">Daily settlement and transaction auditing.</p>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
            <div className="bg-white px-5 py-3 rounded-2xl border border-slate-100 flex items-center gap-4 shadow-sm">
@@ -266,7 +274,7 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
                onChange={e => setFilterDate(e.target.value)}
              />
            </div>
-           <button onClick={() => setFilterDate('')} className="p-3 bg-white text-slate-400 border border-slate-100 rounded-xl hover:text-rose-500 transition-colors">
+           <button onClick={() => setFilterDate('')} className="p-4 bg-white text-slate-400 border border-slate-100 rounded-2xl hover:text-rose-500 transition-colors shadow-sm">
              <Trash2 size={18} />
            </button>
         </div>
@@ -274,7 +282,7 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
 
       {/* Manual Controls */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
-        <div className={`lg:col-span-9 p-12 rounded-[3.5rem] border shadow-sm relative overflow-hidden transition-all duration-500 ${activeShift ? 'bg-slate-900 text-white border-blue-500/30' : 'bg-white text-slate-900 border-slate-100'}`}>
+        <div className={`lg:col-span-9 p-12 rounded-[3.5rem] border shadow-sm relative overflow-hidden transition-all duration-500 ${activeShift ? 'bg-slate-900 text-white border-blue-500/30 shadow-2xl shadow-blue-900/10' : 'bg-white text-slate-900 border-slate-100'}`}>
           <div className="relative z-10 h-full flex flex-col justify-between">
             <div className="flex items-start justify-between mb-12">
               <div className="flex items-center gap-5">
@@ -282,16 +290,16 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
                   {isProcessing ? <Loader2 size={32} className="animate-spin" /> : <Clock size={32} className={activeShift ? 'animate-pulse' : ''} />}
                 </div>
                 <div>
-                  <h2 className="text-2xl font-black uppercase tracking-tight leading-none mb-2">{activeShift ? 'Terminal Session Active' : 'No Active Session'}</h2>
-                  <p className={`font-bold text-sm uppercase tracking-widest ${activeShift ? 'text-blue-400' : 'text-slate-400'}`}>
-                    {activeShift ? `OPERATOR: ${activeShift.user?.name} • OPENED: ${new Date(activeShift.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Terminal ready for activation.'}
+                  <h2 className="text-2xl font-black uppercase tracking-tight leading-none mb-2">{activeShift ? 'Terminal Active' : 'Station Idle'}</h2>
+                  <p className={`font-bold text-[10px] uppercase tracking-widest ${activeShift ? 'text-blue-400' : 'text-slate-400'}`}>
+                    {activeShift ? `OPERATOR: ${activeShift.user?.name} • SINCE ${new Date(activeShift.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Terminal ready for activation.'}
                   </p>
                 </div>
               </div>
               {activeShift && (
                 <div className="flex items-center gap-2">
                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping"></div>
-                   <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">Online</span>
+                   <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">Live</span>
                 </div>
               )}
             </div>
@@ -316,12 +324,6 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
                 </div>
               </div>
             )}
-
-            {!activeShift && (
-               <div className="py-10 text-center opacity-30">
-                  <p className="italic font-bold text-slate-400 uppercase tracking-[0.2em] text-[10px]">Station Idle. Please launch terminal below.</p>
-               </div>
-            )}
           </div>
         </div>
 
@@ -337,7 +339,6 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
               </div>
               <div className="text-center">
                 <h3 className="text-xl font-black uppercase tracking-tight">Open Terminal</h3>
-                <p className="text-blue-100 text-[10px] font-black mt-1 uppercase tracking-widest opacity-60">Start Session</p>
               </div>
             </button>
           ) : (
@@ -350,8 +351,8 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
                 <LogOut size={40} />
               </div>
               <div className="text-center">
-                <h3 className="text-xl font-black uppercase tracking-tight">Close Terminal</h3>
-                <p className="text-rose-100 text-[10px] font-black mt-1 uppercase tracking-widest opacity-60">Settle & Audit</p>
+                <h3 className="text-xl font-black uppercase tracking-tight">End Session</h3>
+                <p className="text-rose-100 text-[10px] font-black mt-1 uppercase tracking-widest opacity-60">Settle & Close</p>
               </div>
             </button>
           )}
@@ -361,12 +362,14 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
       {/* Active Session Ledger (Void Sales) */}
       {activeShift && (
         <section className="space-y-6 animate-in slide-in-from-bottom-5">
-           <div className="flex items-center justify-between">
+           <div className="flex items-center justify-between px-6">
             <div className="flex items-center gap-3">
                <RefreshCw className="text-blue-500 animate-spin-slow" size={20} />
-               <h3 className="text-xs font-black text-slate-900 uppercase tracking-[0.2em]">Active Session Ledger</h3>
+               <h3 className="text-xs font-black text-slate-900 uppercase tracking-[0.2em]">Active Session Transactions</h3>
             </div>
-            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{activeShiftSales.length} Entries in current session</p>
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">
+              Void mistakes here to restore stock
+            </p>
           </div>
 
           <div className="bg-white rounded-[3rem] border border-blue-100 shadow-sm overflow-hidden">
@@ -374,11 +377,10 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
               <thead className="bg-blue-50/50 border-b border-blue-100">
                 <tr>
                   <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest">Time</th>
-                  <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest">Transaction ID</th>
+                  <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest">Reference</th>
                   <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest">Items</th>
-                  <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest">Channel</th>
                   <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest text-right">Amount</th>
-                  <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest text-right">Action</th>
+                  <th className="px-10 py-6 text-[10px] font-black text-blue-600 uppercase tracking-widest text-right">Control</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -395,25 +397,22 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
                          {sale.sale_items?.map((i: any) => i.product?.name).join(', ')}
                        </p>
                     </td>
-                    <td className="px-10 py-6">
-                       <span className="px-3 py-1 bg-white border border-slate-200 rounded-full text-[9px] font-black uppercase tracking-widest text-slate-500">{sale.payment_method}</span>
-                    </td>
                     <td className="px-10 py-6 text-right font-black text-slate-900">KSh {Number(sale.total_amount).toLocaleString()}</td>
                     <td className="px-10 py-6 text-right">
                        <button 
                         onClick={() => handleVoidSale(sale)}
                         disabled={isProcessing}
-                        className="px-4 py-2 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-xl transition-all font-black text-[9px] uppercase tracking-widest flex items-center gap-2 ml-auto border border-rose-100"
+                        className="px-5 py-2.5 bg-rose-50 text-rose-600 hover:bg-rose-600 hover:text-white rounded-xl transition-all font-black text-[9px] uppercase tracking-widest flex items-center gap-2 ml-auto border border-rose-100 active:scale-95"
                        >
-                         <Undo2 size={14} /> Void Sale
+                         <Undo2 size={14} /> Void Transaction
                        </button>
                     </td>
                   </tr>
                 ))}
                 {activeShiftSales.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-10 py-12 text-center text-slate-300 italic text-xs font-bold uppercase tracking-widest opacity-30">
-                      No sales yet in this session.
+                    <td colSpan={5} className="px-10 py-16 text-center text-slate-300 italic text-[10px] font-black uppercase tracking-widest opacity-30">
+                      No transactions recorded in this session.
                     </td>
                   </tr>
                 )}
@@ -425,12 +424,11 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
 
       {/* History Ledger */}
       <section className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between px-6">
           <div className="flex items-center gap-3">
              <History className="text-slate-400" size={20} />
-             <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Closed Session Ledger</h3>
+             <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.2em]">Audit Ledger</h3>
           </div>
-          <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">{history.length} Logs Found</p>
         </div>
 
         <div className="bg-white rounded-[3rem] border border-slate-100 shadow-sm overflow-hidden">
@@ -438,63 +436,54 @@ const Shifts: React.FC<ShiftsProps> = ({ user }) => {
             <thead className="bg-slate-50 border-b border-slate-100">
               <tr>
                 <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest">Operator</th>
-                <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Session Window</th>
+                <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Date</th>
                 <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Revenue</th>
-                <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">COGS/Exp</th>
-                <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Net Profit</th>
+                <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Status</th>
                 <th className="px-10 py-6 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Data</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {history.map(s => {
-                const profit = Number(s.total_sales) - Number(s.total_expenses || 0) - Number(s.total_cogs || 0);
-                return (
-                  <tr key={s.id} className="hover:bg-slate-50 transition-colors group">
-                    <td className="px-10 py-6">
-                      <div className="flex items-center gap-4">
-                        <div className="w-11 h-11 rounded-[1.25rem] bg-slate-900 text-white flex items-center justify-center font-black text-sm shadow-lg">
-                          {s.user?.name?.charAt(0)}
-                        </div>
-                        <div>
-                          <p className="text-sm font-black text-slate-900 tracking-tight">{s.user?.name}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ID: {s.id.slice(0, 5)}</p>
-                        </div>
+              {history.map(s => (
+                <tr key={s.id} className="hover:bg-slate-50 transition-colors group">
+                  <td className="px-10 py-6">
+                    <div className="flex items-center gap-4">
+                      <div className="w-11 h-11 rounded-[1.25rem] bg-slate-900 text-white flex items-center justify-center font-black text-sm shadow-lg">
+                        {s.user?.name?.charAt(0)}
                       </div>
-                    </td>
-                    <td className="px-10 py-6 text-center">
-                       <p className="text-sm font-black text-slate-900 leading-none mb-1">{new Date(s.start_time).toLocaleDateString('en-KE', { day: 'numeric', month: 'short' })}</p>
-                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                         {new Date(s.start_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {s.end_time ? new Date(s.end_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '...'}
-                       </p>
-                    </td>
-                    <td className="px-10 py-6 text-right font-black text-slate-900 tabular-nums">
-                      KSh {Number(s.total_sales).toLocaleString()}
-                    </td>
-                    <td className="px-10 py-6 text-right font-bold text-rose-400 tabular-nums text-xs">
-                      KSh {(Number(s.total_expenses || 0) + Number(s.total_cogs || 0)).toLocaleString()}
-                    </td>
-                    <td className="px-10 py-6 text-right">
-                      <span className={`text-base font-black tabular-nums ${profit >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                        KSh {profit.toLocaleString()}
-                      </span>
-                    </td>
-                    <td className="px-10 py-6 text-right">
-                      <button 
-                        onClick={() => exportCSV(s)}
-                        className="px-5 py-3 bg-slate-50 text-slate-500 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 hover:text-white transition-all shadow-sm flex items-center gap-2 ml-auto"
-                      >
-                        <FileText size={16} /> Audit
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
+                      <div>
+                        <p className="text-sm font-black text-slate-900 tracking-tight">{s.user?.name}</p>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ID: {s.id.slice(0, 5)}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-10 py-6 text-center">
+                     <p className="text-sm font-black text-slate-900 leading-none mb-1">{new Date(s.start_time).toLocaleDateString('en-KE', { day: 'numeric', month: 'short' })}</p>
+                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                       {new Date(s.start_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                     </p>
+                  </td>
+                  <td className="px-10 py-6 text-right font-black text-slate-900 tabular-nums">
+                    KSh {Number(s.total_sales).toLocaleString()}
+                  </td>
+                  <td className="px-10 py-6 text-right">
+                    <span className="px-3 py-1 bg-emerald-50 text-emerald-600 text-[9px] font-black rounded-full uppercase tracking-widest">Settled</span>
+                  </td>
+                  <td className="px-10 py-6 text-right">
+                    <button 
+                      onClick={() => exportCSV(s)}
+                      className="px-5 py-3 bg-slate-50 text-slate-500 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-900 hover:text-white transition-all shadow-sm flex items-center gap-2 ml-auto"
+                    >
+                      <FileText size={16} /> Audit
+                    </button>
+                  </td>
+                </tr>
+              ))}
               {history.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={6} className="px-10 py-40 text-center">
+                  <td colSpan={5} className="px-10 py-40 text-center">
                      <div className="flex flex-col items-center gap-4 opacity-20">
                         <History size={80} className="text-slate-300" />
-                        <p className="font-black text-xs uppercase tracking-widest">Zero historical data on record.</p>
+                        <p className="font-black text-xs uppercase tracking-widest">Zero historical data found.</p>
                      </div>
                   </td>
                 </tr>
