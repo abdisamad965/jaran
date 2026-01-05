@@ -11,15 +11,12 @@ import {
   Smartphone,
   CheckCircle2,
   Printer,
-  Clock,
-  AlertCircle,
-  RefreshCw,
   History,
   Undo2,
-  X
+  X,
+  RefreshCw
 } from 'lucide-react';
 import { Product, CartItem, User, Settings, Shift } from '../types';
-import { useNavigate } from 'react-router-dom';
 
 interface POSProps {
   user: User;
@@ -27,13 +24,12 @@ interface POSProps {
 }
 
 const POS: React.FC<POSProps> = ({ user, settings }) => {
-  const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeShift, setActiveShift] = useState<Shift | null>(null);
   const [recentSales, setRecentSales] = useState<any[]>([]);
-  const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [showRecentSales, setShowRecentSales] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'mpesa'>('cash');
   const [checkoutComplete, setCheckoutComplete] = useState(false);
@@ -55,7 +51,7 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
       .select('*, sale_items(*, product:products(name))')
       .eq('shift_id', shiftId)
       .order('sale_date', { ascending: false })
-      .limit(5);
+      .limit(8);
     if (data) setRecentSales(data);
   };
 
@@ -67,71 +63,63 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
       .limit(1)
       .maybeSingle();
 
-    const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
-
     if (currentShift) {
-      const shiftDateStr = new Date(currentShift.start_time).toISOString().split('T')[0];
-      if (shiftDateStr !== todayStr) {
-        const { data: sales } = await supabase.from('sales').select('total_amount').eq('shift_id', currentShift.id);
-        const totalAmt = sales?.reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
-        await supabase.from('shifts').update({ closed: true, end_time: new Date().toISOString(), total_sales: totalAmt }).eq('id', currentShift.id);
-        const { data: newShift } = await supabase.from('shifts').insert({ user_id: user.id, start_time: new Date().toISOString(), total_sales: 0, total_cash: 0, total_card: 0, closed: false }).select().single();
+      setActiveShift(currentShift);
+      fetchRecentSales(currentShift.id);
+    } else {
+      const { data: newShift } = await supabase.from('shifts').insert([{
+        user_id: user.id,
+        start_time: new Date().toISOString(),
+        total_sales: 0,
+        total_cash: 0,
+        total_card: 0,
+        closed: false
+      }]).select().single();
+      if (newShift) {
         setActiveShift(newShift);
         fetchRecentSales(newShift.id);
-      } else {
-        setActiveShift(currentShift);
-        fetchRecentSales(currentShift.id);
       }
-    } else {
-      const { data: newShift } = await supabase.from('shifts').insert({ user_id: user.id, start_time: new Date().toISOString(), total_sales: 0, total_cash: 0, total_card: 0, closed: false }).select().single();
-      setActiveShift(newShift);
-      fetchRecentSales(newShift.id);
     }
   };
 
   const handleVoidSale = async (sale: any) => {
-    if (!confirm(`VOID Transaction #${sale.id.slice(0,8).toUpperCase()}? Stock will be restored.`)) return;
+    if (!confirm(`VOID transaction #${sale.id.slice(0,8).toUpperCase()}?`)) return;
     
-    setIsCheckingOut(true); // Reuse loading state
+    setIsProcessing(true);
     try {
-      // 1. Restore Stock
-      for (const item of sale.sale_items) {
-        const { data: prod } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
-        if (prod) {
-          await supabase.from('products').update({ stock_quantity: prod.stock_quantity + item.quantity }).eq('id', item.product_id);
+      if (sale.sale_items) {
+        for (const item of sale.sale_items) {
+          const { data: prod } = await supabase.from('products').select('stock_quantity').eq('id', item.product_id).single();
+          if (prod) {
+            await supabase.from('products').update({ stock_quantity: prod.stock_quantity + item.quantity }).eq('id', item.product_id);
+          }
         }
       }
 
-      // 2. Delete Sale
       await supabase.from('sale_items').delete().eq('sale_id', sale.id);
       await supabase.from('sales').delete().eq('id', sale.id);
 
-      // 3. Update Shift Totals
       if (activeShift) {
-        const { data: remainingSales } = await supabase.from('sales').select('total_amount, payment_method').eq('shift_id', activeShift.id);
-        const newTotal = remainingSales?.reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
-        const newCash = remainingSales?.filter(s => s.payment_method === 'cash').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
-        const newCard = remainingSales?.filter(s => s.payment_method === 'card').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
-        const newMpesa = remainingSales?.filter(s => s.payment_method === 'mpesa').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
+        const { data: remSales } = await supabase.from('sales').select('total_amount, payment_method').eq('shift_id', activeShift.id);
+        const totalSales = remSales?.reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
+        const totalCash = remSales?.filter(s => s.payment_method === 'cash').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
+        const totalCard = remSales?.filter(s => s.payment_method !== 'cash').reduce((acc, s) => acc + Number(s.total_amount), 0) || 0;
 
         await supabase.from('shifts').update({
-          total_sales: newTotal,
-          total_cash: newCash,
-          total_card: newCard,
-          total_mpesa: newMpesa
+          total_sales: totalSales,
+          total_cash: totalCash,
+          total_card: totalCard
         }).eq('id', activeShift.id);
         
-        setActiveShift({ ...activeShift, total_sales: newTotal });
+        setActiveShift(prev => prev ? ({...prev, total_sales: totalSales, total_cash: totalCash, total_card: totalCard}) : null);
         fetchRecentSales(activeShift.id);
       }
-
       fetchProducts();
-      alert("Transaction voided successfully.");
+      alert("Void completed.");
     } catch (err: any) {
       alert("Void failed: " + err.message);
     } finally {
-      setIsCheckingOut(false);
+      setIsProcessing(false);
     }
   };
 
@@ -165,27 +153,37 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
     }).filter(item => item.cartQuantity > 0));
   };
 
-  const subtotal = cart.reduce((acc, item) => acc + (item.price * item.cartQuantity), 0);
-  const tax = subtotal * ((settings?.tax_rate || 0) / 100);
-  const total = subtotal + tax;
+  const total = cart.reduce((acc, item) => acc + (item.price * item.cartQuantity), 0);
 
   const handleCheckout = async () => {
-    await ensureValidShift(); 
-    if (!activeShift) return alert("System session re-validation required.");
-    if (cart.length === 0) return;
-
-    setIsCheckingOut(true);
+    if (cart.length === 0 || !activeShift) return;
+    setIsProcessing(true);
     try {
-      const { data: sale, error: saleErr } = await supabase.from('sales').insert({ total_amount: total, payment_method: paymentMethod, cashier_id: user.id, shift_id: activeShift.id }).select().single();
+      const { data: sale, error: saleErr } = await supabase.from('sales').insert([{
+        total_amount: total,
+        payment_method: paymentMethod,
+        cashier_id: user.id,
+        shift_id: activeShift.id,
+        sale_date: new Date().toISOString()
+      }]).select().single();
+
       if (saleErr) throw saleErr;
 
-      const itemsToUpdate = cart.map(item => ({ sale_id: sale.id, product_id: item.id, quantity: item.cartQuantity, unit_price: item.price, total_price: item.price * item.cartQuantity }));
-      await supabase.from('sale_items').insert(itemsToUpdate);
+      const items = cart.map(item => ({
+        sale_id: sale.id,
+        product_id: item.id,
+        quantity: item.cartQuantity,
+        unit_price: item.price,
+        total_price: item.price * item.cartQuantity
+      }));
+
+      await supabase.from('sale_items').insert(items);
 
       for (const item of cart) {
         await supabase.from('products').update({ stock_quantity: item.stock_quantity - item.cartQuantity }).eq('id', item.id);
       }
 
+      // Update Shift using core columns
       const { data: st } = await supabase.from('shifts').select('*').eq('id', activeShift.id).single();
       const updatedTotals = {
         total_sales: Number(st.total_sales || 0) + total,
@@ -194,262 +192,123 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
       };
       await supabase.from('shifts').update(updatedTotals).eq('id', activeShift.id);
       
-      setActiveShift({ ...st, ...updatedTotals });
-      fetchRecentSales(st.id);
-      setLastSale({ ...sale, items: cart });
+      setActiveShift({...st, ...updatedTotals});
+      fetchRecentSales(activeShift.id);
+      setLastSale({...sale, items: cart});
       setCheckoutComplete(true);
       setCart([]);
       fetchProducts();
     } catch (err: any) {
-      alert("Checkout Failure: " + err.message);
+      alert("Checkout error: " + err.message);
     } finally {
-      setIsCheckingOut(false);
+      setIsProcessing(false);
     }
-  };
-
-  const printReceipt = () => {
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
-
-    const localConfigStr = localStorage.getItem('jaran_biz_config');
-    let bizName = settings?.store_name || 'JARAN CLEANING SERVICE';
-    let bizPhone = '';
-    let bizAddress = '';
-
-    if (localConfigStr) {
-      try {
-        const parsed = JSON.parse(localConfigStr);
-        bizName = parsed.store_name || bizName;
-        bizPhone = parsed.phone || '';
-        bizAddress = parsed.address || '';
-      } catch (e) {
-        console.error("Local config parse error");
-      }
-    }
-
-    const receiptHtml = `
-      <html>
-        <head>
-          <style>@page { margin: 0; } body { font-family: 'Courier New', monospace; width: 80mm; margin: 0; padding: 12mm 6mm; font-size: 13px; line-height: 1.5; color: #000; } .header { text-align: center; margin-bottom: 20px; } .business { font-size: 16px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px; } .meta { font-size: 11px; margin-bottom: 2px; } .divider { border-top: 1px dashed #000; margin: 12px 0; } .item { display: flex; justify-content: space-between; margin-bottom: 6px; } .totals { font-weight: bold; margin-top: 12px; border-top: 1px solid #000; padding-top: 8px; } .footer { text-align: center; margin-top: 40px; font-size: 11px; font-weight: bold; text-transform: uppercase; }</style>
-        </head>
-        <body>
-          <div class="header"><div class="business">${bizName}</div>${bizAddress ? `<div class="meta">📍 ${bizAddress}</div>` : ''}${bizPhone ? `<div class="meta">📞 ${bizPhone}</div>` : ''}</div>
-          <div class="divider"></div>
-          <div class="meta">DATE: ${new Date(lastSale.sale_date).toLocaleString()}</div>
-          <div class="meta">ID: ${lastSale.id.slice(0,8).toUpperCase()}</div>
-          <div class="meta">OPERATOR: ${user.name.toUpperCase()}</div>
-          <div class="divider"></div>
-          ${lastSale.items.map((i: any) => `<div class="item"><span>${i.name} x${i.cartQuantity}</span><span>${(i.price * i.cartQuantity).toLocaleString()}</span></div>`).join('')}
-          <div class="divider"></div>
-          <div class="totals"><div class="item"><span>SUBTOTAL</span><span>KSh ${Number(lastSale.total_amount).toLocaleString()}</span></div><div class="item" style="font-size: 16px;"><span>TOTAL DUE</span><span>KSh ${Number(lastSale.total_amount).toLocaleString()}</span></div></div>
-          <div class="divider"></div>
-          <div class="item"><span>METHOD</span><span>${lastSale.payment_method.toUpperCase()}</span></div>
-          <div class="footer"><p>*** THANK YOU FOR YOUR BUSINESS ***</p><p>JARAN CLEANING SERVICE</p></div>
-          <script>window.onload = () => { window.print(); setTimeout(() => window.close(), 500); }</script>
-        </body>
-      </html>
-    `;
-    printWindow.document.write(receiptHtml);
-    printWindow.document.close();
   };
 
   return (
-    <div className="max-w-[1700px] mx-auto flex flex-col lg:flex-row gap-6 h-[calc(100vh-120px)] min-h-[550px] animate-in fade-in duration-500 pb-4 relative">
-      
-      {/* Product Grid */}
-      <div className="flex-1 flex flex-col min-h-0 bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden relative">
+    <div className="max-w-[1700px] mx-auto flex flex-col lg:flex-row gap-6 h-[calc(100vh-120px)] animate-in fade-in duration-500 pb-4 relative">
+      {/* Product View */}
+      <div className="flex-1 flex flex-col bg-white rounded-[2.5rem] border border-slate-100 overflow-hidden shadow-sm">
         <div className="px-8 py-6 border-b border-slate-50 flex items-center justify-between shrink-0">
-          <div className="relative flex-1 max-w-md group">
-            <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-blue-500 transition-colors" size={20} />
-            <input
-              type="text"
-              placeholder="Search services..."
-              className="w-full pl-14 pr-6 py-4 bg-slate-50 border-none rounded-xl focus:ring-2 focus:ring-blue-500 text-sm font-bold text-slate-800 outline-none transition-all"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
+            <input type="text" placeholder="Search products..." className="w-full pl-14 pr-6 py-4 bg-slate-50 border-none rounded-2xl text-sm font-bold outline-none" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
           </div>
-          <div className="flex items-center gap-3">
-             <button 
-               onClick={() => setShowRecentSales(true)}
-               className="p-4 bg-slate-50 text-slate-400 hover:text-blue-600 rounded-2xl border border-slate-100 transition-all hover:bg-blue-50"
-               title="Recent Sales History"
-             >
-                <History size={20} />
-             </button>
-             <div className="hidden sm:flex items-center gap-4 bg-blue-50 px-6 py-3 rounded-xl border border-blue-100">
-               <div className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse"></div>
-               <p className="text-[10px] font-black text-blue-700 uppercase tracking-widest leading-none">Live Terminal</p>
-             </div>
-          </div>
+          <button onClick={() => setShowRecentSales(true)} className="p-4 bg-slate-50 text-slate-400 hover:text-blue-600 rounded-2xl border border-slate-100 transition-all">
+            <History size={20} />
+          </button>
         </div>
-
-        <div className="flex-1 overflow-y-auto px-8 py-8 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 content-start custom-scrollbar">
-          {filteredProducts.map(product => (
-            <button
-              key={product.id}
-              onClick={() => addToCart(product)}
-              disabled={product.stock_quantity <= 0}
-              className={`p-5 rounded-[2rem] border transition-all text-left flex flex-col justify-between group h-48 relative overflow-hidden ${
-                product.stock_quantity <= 0 ? 'bg-slate-50 border-slate-100 opacity-50 grayscale cursor-not-allowed' : 'bg-white border-slate-100 hover:border-blue-600 hover:shadow-xl active:scale-[0.98]'
-              }`}
-            >
-              <div className="relative z-10">
-                <span className="text-[9px] font-black text-blue-600 uppercase tracking-[0.2em]">{product.category}</span>
-                <h4 className="font-black text-slate-900 text-base mt-2 leading-tight line-clamp-2">{product.name}</h4>
-              </div>
-              <div className="relative z-10 flex items-center justify-between pt-4 border-t border-slate-50">
-                <p className="text-xl font-black text-slate-900 tracking-tighter">KSh {Number(product.price).toLocaleString()}</p>
-                <div className="text-right">
-                   <p className={`text-xs font-black ${product.stock_quantity <= product.reorder_level ? 'text-rose-600' : 'text-slate-400'}`}>{product.stock_quantity}</p>
-                </div>
-              </div>
+        <div className="flex-1 overflow-y-auto px-8 py-8 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 content-start custom-scrollbar">
+          {filteredProducts.map(p => (
+            <button key={p.id} onClick={() => addToCart(p)} disabled={p.stock_quantity <= 0} className="p-6 rounded-[2rem] border border-slate-100 bg-white hover:border-blue-600 hover:shadow-xl transition-all text-left flex flex-col justify-between h-44 disabled:opacity-40">
+               <div>
+                 <span className="text-[9px] font-black text-blue-500 uppercase tracking-widest">{p.category}</span>
+                 <h4 className="font-black text-slate-900 mt-2 line-clamp-2">{p.name}</h4>
+               </div>
+               <p className="text-xl font-black text-slate-900">KSh {Number(p.price).toLocaleString()}</p>
             </button>
           ))}
         </div>
       </div>
 
-      {/* Terminal Area */}
-      <div className="w-full lg:w-[480px] flex flex-col bg-slate-950 rounded-[2.5rem] shadow-2xl overflow-hidden shrink-0 border border-white/5">
+      {/* Cart View */}
+      <div className="w-full lg:w-[450px] flex flex-col bg-slate-950 rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/5">
         <div className="p-8 border-b border-white/5 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-4 text-white">
-            <div className="w-12 h-12 bg-white/5 rounded-xl flex items-center justify-center border border-white/5">
-              <ShoppingCart size={24} className="text-blue-500" />
-            </div>
-            <div>
-              <h3 className="font-black uppercase tracking-[0.2em] text-[10px] leading-none mb-1">Terminal</h3>
-              <p className="text-[8px] text-slate-500 font-bold tracking-widest uppercase">Operator: {user.name.split(' ')[0]}</p>
-            </div>
-          </div>
-          <span className="bg-blue-600 text-white text-[10px] font-black px-5 py-2.5 rounded-full tracking-widest">{cart.length} ITEMS</span>
+           <div className="flex items-center gap-4 text-white">
+             <ShoppingCart className="text-blue-500" />
+             <h3 className="font-black uppercase tracking-widest text-[10px]">Terminal Basket</h3>
+           </div>
+           <span className="bg-blue-600 text-white text-[10px] font-black px-4 py-2 rounded-full">{cart.length} ITEMS</span>
         </div>
-
-        <div className="flex-1 overflow-y-auto p-8 space-y-4 dark-scrollbar custom-scrollbar">
-          {cart.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-800 space-y-6 opacity-20">
-              <ShoppingCart size={100} strokeWidth={0.5} />
-              <p className="font-black text-[9px] uppercase tracking-[0.5em] text-center">Awaiting Selection</p>
-            </div>
-          ) : (
-            cart.map(item => (
-              <div key={item.id} className="bg-white/5 p-5 rounded-2xl flex items-center justify-between group border border-white/5">
-                <div className="flex-1 pr-4">
-                  <h4 className="text-sm font-black text-white line-clamp-1">{item.name}</h4>
-                  <p className="text-xs font-bold text-slate-500 mt-1">KSh {Number(item.price).toLocaleString()}</p>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center bg-black/50 rounded-xl p-1.5 border border-white/10">
-                    <button onClick={() => updateCartQuantity(item.id, -1)} className="p-2 hover:text-white text-slate-500 transition-colors"><Minus size={14} /></button>
-                    <span className="w-8 text-center text-sm font-black text-white">{item.cartQuantity}</span>
-                    <button onClick={() => updateCartQuantity(item.id, 1)} className="p-2 hover:text-white text-slate-500 transition-colors"><Plus size={14} /></button>
-                  </div>
-                  <button onClick={() => setCart(prev => prev.filter(i => i.id !== item.id))} className="text-rose-500 hover:text-rose-400 p-2">
-                    <Trash2 size={20} />
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
+        <div className="flex-1 overflow-y-auto p-8 space-y-4 custom-scrollbar">
+           {cart.map(item => (
+             <div key={item.id} className="bg-white/5 p-4 rounded-2xl flex items-center justify-between border border-white/5">
+               <div className="flex-1">
+                 <h4 className="text-sm font-black text-white">{item.name}</h4>
+                 <p className="text-xs font-bold text-slate-500">KSh {item.price.toLocaleString()}</p>
+               </div>
+               <div className="flex items-center gap-4">
+                 <div className="flex items-center bg-black rounded-lg p-1 border border-white/10">
+                   <button onClick={() => updateCartQuantity(item.id, -1)} className="p-1.5 text-slate-500 hover:text-white"><Minus size={14}/></button>
+                   <span className="w-6 text-center text-white text-xs font-black">{item.cartQuantity}</span>
+                   <button onClick={() => updateCartQuantity(item.id, 1)} className="p-1.5 text-slate-500 hover:text-white"><Plus size={14}/></button>
+                 </div>
+                 <button onClick={() => setCart(prev => prev.filter(i => i.id !== item.id))} className="text-rose-500"><Trash2 size={18}/></button>
+               </div>
+             </div>
+           ))}
         </div>
-
-        <div className="p-8 bg-black/40 border-t border-white/10 space-y-8 shrink-0">
-          <div className="space-y-3">
-            <div className="flex justify-between text-slate-500 text-[9px] font-black uppercase tracking-widest">
-              <span>Gross Subtotal</span>
-              <span className="text-slate-300">KSh {subtotal.toLocaleString()}</span>
-            </div>
-            <div className="flex justify-between text-slate-500 text-[9px] font-black uppercase tracking-widest">
-              <span>VAT (${settings?.tax_rate || 0}%)</span>
-              <span className="text-slate-300">KSh {tax.toLocaleString()}</span>
-            </div>
-            <div className="flex justify-between text-white pt-6 border-t border-white/5 items-baseline">
-              <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">NET DUE</span>
-              <span className="text-5xl font-black text-blue-500 tabular-nums tracking-tighter">KSh {total.toLocaleString()}</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            <button onClick={() => setPaymentMethod('cash')} className={`flex flex-col items-center gap-2 p-4 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'cash' ? 'bg-blue-600 border-blue-500 text-white shadow-lg' : 'bg-white/5 border-white/10 text-slate-600'}`}><Banknote size={20} /> Cash</button>
-            <button onClick={() => setPaymentMethod('card')} className={`flex flex-col items-center gap-2 p-4 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'card' ? 'bg-blue-600 border-blue-500 text-white shadow-lg' : 'bg-white/5 border-white/10 text-slate-600'}`}><CreditCard size={20} /> Card</button>
-            <button onClick={() => setPaymentMethod('mpesa')} className={`flex flex-col items-center gap-2 p-4 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'mpesa' ? 'bg-blue-600 border-blue-500 text-white shadow-lg' : 'bg-white/5 border-white/10 text-slate-600'}`}><Smartphone size={20} /> Mpesa</button>
-          </div>
-
-          <button
-            onClick={handleCheckout}
-            disabled={cart.length === 0 || isCheckingOut}
-            className="w-full py-6 bg-blue-600 hover:bg-blue-700 disabled:opacity-30 text-white font-black rounded-2xl shadow-xl transition-all flex items-center justify-center gap-4 uppercase tracking-[0.4em] text-[10px] active:scale-95"
-          >
-            {isCheckingOut ? <RefreshCw className="animate-spin" size={20} /> : 'Process Settlement'}
-          </button>
+        <div className="p-8 bg-black/40 border-t border-white/10 space-y-6">
+           <div className="flex justify-between items-baseline">
+             <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Amount Due</span>
+             <span className="text-4xl font-black text-blue-500">KSh {total.toLocaleString()}</span>
+           </div>
+           <div className="grid grid-cols-3 gap-2">
+             <button onClick={() => setPaymentMethod('cash')} className={`p-4 rounded-xl border text-[9px] font-black uppercase transition-all ${paymentMethod === 'cash' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white/5 border-white/10 text-slate-500'}`}>Cash</button>
+             <button onClick={() => setPaymentMethod('card')} className={`p-4 rounded-xl border text-[9px] font-black uppercase transition-all ${paymentMethod === 'card' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white/5 border-white/10 text-slate-500'}`}>Card</button>
+             <button onClick={() => setPaymentMethod('mpesa')} className={`p-4 rounded-xl border text-[9px] font-black uppercase transition-all ${paymentMethod === 'mpesa' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-white/5 border-white/10 text-slate-500'}`}>Mpesa</button>
+           </div>
+           <button onClick={handleCheckout} disabled={cart.length === 0 || isProcessing} className="w-full py-6 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl uppercase tracking-widest text-[11px] flex items-center justify-center gap-3">
+             {isProcessing ? <RefreshCw className="animate-spin" /> : 'Settle Transaction'}
+           </button>
         </div>
       </div>
 
-      {/* Recent Sales Sidebar/Drawer */}
+      {/* History Drawer */}
       {showRecentSales && (
         <div className="absolute inset-y-0 right-0 w-[400px] bg-white shadow-2xl z-[60] border-l border-slate-100 flex flex-col animate-in slide-in-from-right duration-300 rounded-l-[3rem]">
           <div className="p-8 border-b border-slate-50 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-               <History className="text-blue-600" size={20} />
-               <h3 className="text-xs font-black uppercase tracking-[0.2em] text-slate-900">Recent Session Ledger</h3>
-            </div>
-            <button onClick={() => setShowRecentSales(false)} className="p-2 hover:bg-slate-50 rounded-xl text-slate-400">
-              <X size={20} />
-            </button>
+            <h3 className="text-xs font-black uppercase tracking-widest text-slate-900">Recent Terminal Activity</h3>
+            <button onClick={() => setShowRecentSales(false)} className="text-slate-400"><X /></button>
           </div>
           <div className="flex-1 overflow-y-auto p-6 space-y-4">
             {recentSales.map(sale => (
-              <div key={sale.id} className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 space-y-4 relative group">
+              <div key={sale.id} className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 space-y-4">
                 <div className="flex justify-between items-start">
-                   <div>
-                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">#{sale.id.slice(0,8).toUpperCase()}</p>
-                     <p className="text-sm font-black text-slate-900 leading-none">KSh {Number(sale.total_amount).toLocaleString()}</p>
-                   </div>
-                   <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-full text-[8px] font-black uppercase text-slate-500">{sale.payment_method}</span>
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400">#{sale.id.slice(0,8).toUpperCase()}</p>
+                    <p className="text-sm font-black text-slate-900">KSh {Number(sale.total_amount).toLocaleString()}</p>
+                  </div>
+                  <span className="bg-white px-3 py-1 border rounded-full text-[8px] font-black uppercase">{sale.payment_method}</span>
                 </div>
-                <div className="text-[10px] font-bold text-slate-500 line-clamp-1 italic">
-                  {sale.sale_items?.map((i: any) => i.product?.name).join(', ')}
-                </div>
-                <button 
-                  onClick={() => handleVoidSale(sale)}
-                  disabled={isCheckingOut}
-                  className="w-full py-3 bg-white border border-rose-100 text-rose-500 text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-rose-500 hover:text-white transition-all flex items-center justify-center gap-2"
-                >
-                  <Undo2 size={14} /> Void Transaction
-                </button>
+                <button onClick={() => handleVoidSale(sale)} className="w-full py-3 bg-rose-50 text-rose-600 text-[10px] font-black uppercase rounded-xl border border-rose-100 hover:bg-rose-600 hover:text-white transition-all">Void Sale</button>
               </div>
             ))}
-            {recentSales.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-40 text-slate-300 italic text-[10px] font-black uppercase tracking-widest opacity-40">
-                No recent activity.
-              </div>
-            )}
           </div>
         </div>
       )}
 
-      {checkoutComplete && lastSale && (
-        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[3.5rem] p-10 max-w-lg w-full text-center space-y-8 shadow-2xl animate-in zoom-in duration-300 border border-slate-100">
-            <div className="w-24 h-24 bg-emerald-50 text-emerald-500 rounded-3xl flex items-center justify-center mx-auto border-4 border-emerald-100/50">
-              <CheckCircle2 size={50} strokeWidth={1.5} />
-            </div>
-            <div>
-              <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tighter leading-none mb-3">Settled</h2>
-              <p className="text-slate-400 text-[9px] font-black uppercase tracking-[0.3em]">Transaction: #{lastSale.id.slice(0,10).toUpperCase()}</p>
-            </div>
-            
-            <div className="bg-slate-50 p-8 rounded-[2rem] space-y-3 text-left border border-slate-100">
-               <div className="flex justify-between text-[9px] font-black text-slate-400 uppercase tracking-widest"><span>Channel</span><span className="text-slate-900">{lastSale.payment_method.toUpperCase()}</span></div>
-               <div className="flex justify-between items-center text-3xl font-black text-slate-900 pt-2">
-                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Amount</span>
-                  <span>KSh {Number(lastSale.total_amount).toLocaleString()}</span>
-               </div>
-            </div>
-
-            <div className="flex gap-4 pt-2">
-              <button onClick={() => setCheckoutComplete(false)} className="flex-1 py-5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-black rounded-2xl text-[10px] uppercase tracking-widest transition-all">Dismiss</button>
-              <button onClick={printReceipt} className="flex-1 py-5 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-2xl shadow-xl transition-all flex items-center justify-center gap-4 text-[10px] uppercase tracking-widest"><Printer size={20} /> Receipt</button>
-            </div>
+      {checkoutComplete && (
+        <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+          <div className="bg-white p-12 rounded-[3.5rem] max-w-md w-full text-center space-y-8 animate-in zoom-in duration-300">
+             <div className="w-24 h-24 bg-emerald-50 text-emerald-500 rounded-3xl flex items-center justify-center mx-auto border-4 border-emerald-100">
+               <CheckCircle2 size={50} />
+             </div>
+             <div>
+               <h2 className="text-3xl font-black text-slate-900 leading-none">Settled</h2>
+               <p className="text-slate-400 text-xs font-bold uppercase mt-4 tracking-widest">Transaction Recorded Successfully</p>
+             </div>
+             <button onClick={() => setCheckoutComplete(false)} className="w-full py-5 bg-slate-900 text-white font-black rounded-2xl uppercase tracking-widest text-xs">Dismiss</button>
           </div>
         </div>
       )}
