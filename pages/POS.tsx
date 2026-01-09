@@ -275,8 +275,8 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
   return (
     <div className="max-w-full flex flex-col lg:flex-row h-[calc(100vh-64px)] overflow-hidden bg-slate-50 animate-in fade-in duration-500">
       
-      {/* LEFT: Product Selection */}
-      <div className="flex-1 flex flex-col p-4 md:p-6 min-w-0">
+      {/* LEFT: Product Selection (Now narrower to accommodate wide ledger) */}
+      <div className="flex-1 lg:flex-none lg:w-[45%] xl:w-[40%] flex flex-col p-4 md:p-6 min-w-0 border-r border-slate-100">
         <div className="flex items-center justify-between mb-4 md:mb-6 bg-white p-3 md:p-4 rounded-3xl border border-slate-100 shadow-sm">
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
@@ -289,138 +289,146 @@ const POS: React.FC<POSProps> = ({ user, settings }) => {
             />
           </div>
           
-          <div className="flex items-center gap-3 ml-4">
-            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border ${isOnline ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>
-              {isOnline ? <Wifi size={12}/> : <WifiOff size={12}/>}
-              {isOnline ? 'Online' : 'Offline'}
-            </div>
-            <button onClick={() => setShowRecentSales(true)} className="px-4 py-2.5 bg-slate-900 text-white rounded-xl font-black text-[9px] uppercase tracking-widest flex items-center gap-2 hover:bg-black transition-all">
-              <History size={16} /> History
+          <div className="flex items-center gap-2 ml-2">
+            <button onClick={() => setShowRecentSales(true)} className="p-3 bg-slate-900 text-white rounded-xl font-black hover:bg-black transition-all">
+              <History size={18} />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4 content-start custom-scrollbar pr-2">
+        <div className="flex-1 overflow-y-auto grid grid-cols-2 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start custom-scrollbar pr-2">
           {filteredProducts.map(p => (
             <button 
               key={p.id} 
               onClick={() => addToCart(p)} 
               disabled={p.stock_quantity <= 0}
-              className="group p-4 bg-white border border-slate-100 rounded-[2rem] text-left hover:border-indigo-600 hover:shadow-2xl hover:shadow-indigo-500/10 transition-all flex flex-col justify-between h-40 disabled:opacity-30 relative overflow-hidden"
+              className="group p-3 bg-white border border-slate-100 rounded-[1.5rem] text-left hover:border-indigo-600 hover:shadow-xl transition-all flex flex-col justify-between h-36 disabled:opacity-30 relative overflow-hidden"
             >
-              <div className="absolute top-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                 <div className="w-8 h-8 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-lg"><Plus size={16}/></div>
-              </div>
               <div>
-                <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest px-2 py-0.5 bg-indigo-50 rounded-lg">{p.category}</span>
-                <h4 className="font-black text-slate-800 mt-2 line-clamp-2 text-xs leading-tight">{p.name}</h4>
+                <span className="text-[7px] font-black text-indigo-500 uppercase tracking-widest px-1.5 py-0.5 bg-indigo-50 rounded-lg">{p.category}</span>
+                <h4 className="font-black text-slate-800 mt-1 line-clamp-2 text-[11px] leading-tight">{p.name}</h4>
               </div>
-              <div>
-                <p className="text-base font-black text-slate-900 leading-none">KSh {Number(p.price).toLocaleString()}</p>
-                <p className="text-[8px] font-bold text-slate-400 mt-1 uppercase">Stock: {p.stock_quantity}</p>
+              <div className="flex items-end justify-between">
+                <div>
+                  <p className="text-sm font-black text-slate-900 leading-none">KSh {Number(p.price).toLocaleString()}</p>
+                  <p className="text-[7px] font-bold text-slate-400 mt-0.5 uppercase">Stock: {p.stock_quantity}</p>
+                </div>
+                <div className="w-6 h-6 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all"><Plus size={14}/></div>
               </div>
             </button>
           ))}
         </div>
       </div>
 
-      {/* RIGHT: Wholesale Ledger (FIXED FOOTER LAYOUT) */}
-      <div className="w-full lg:w-[48%] xl:w-[45%] bg-white flex flex-col shadow-[0_0_50px_rgba(0,0,0,0.05)] relative border-l border-slate-100 overflow-hidden">
+      {/* RIGHT: Wholesale Ledger (EXPANDED WIDTH & HORIZONTAL ITEM LAYOUT) */}
+      <div className="w-full lg:w-[55%] xl:w-[60%] bg-white flex flex-col shadow-[-10px_0_40px_rgba(0,0,0,0.03)] relative overflow-hidden">
         {/* Sticky Header */}
-        <div className="p-6 md:p-8 border-b border-slate-50 flex items-center justify-between shrink-0 bg-white">
-           <div className="flex items-center gap-4">
-             <div className="p-3 bg-indigo-600 rounded-2xl shadow-xl shadow-indigo-600/20 text-white"><ShoppingCart size={24} /></div>
+        <div className="p-6 md:px-10 py-6 border-b border-slate-50 flex items-center justify-between shrink-0 bg-white">
+           <div className="flex items-center gap-5">
+             <div className="p-3.5 bg-indigo-600 rounded-2xl shadow-xl shadow-indigo-600/20 text-white"><ShoppingCart size={24} /></div>
              <div>
                <h3 className="font-black uppercase tracking-[0.2em] text-xs text-slate-900 leading-none mb-1">Wholesale Ledger</h3>
                <p className="text-[9px] text-slate-400 font-black tracking-widest uppercase">Pricing Engine: Dynamic Adjustment</p>
              </div>
            </div>
-           <div className="text-right">
-             <span className="bg-slate-50 text-slate-500 text-[10px] font-black px-5 py-2.5 rounded-2xl border border-slate-100">{cart.length} LINE ITEMS</span>
+           <div className="flex items-center gap-3">
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border ${isOnline ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>
+                {isOnline ? <Wifi size={12}/> : <WifiOff size={12}/>}
+                {isOnline ? 'Active' : 'Offline'}
+              </div>
+              <span className="bg-slate-900 text-white text-[10px] font-black px-5 py-2.5 rounded-2xl">{cart.length} ITEMS</span>
            </div>
         </div>
         
-        {/* Scrollable Middle Content */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-4 custom-scrollbar bg-white">
+        {/* Scrollable Middle Content (Optimized for Width) */}
+        <div className="flex-1 overflow-y-auto p-6 md:p-10 space-y-3 custom-scrollbar bg-slate-50/30">
            {cart.length === 0 ? (
              <div className="h-full flex flex-col items-center justify-center text-slate-200">
-               <ShoppingCart size={120} strokeWidth={0.5} />
-               <p className="mt-6 font-black text-xs uppercase tracking-[0.6em]">Station Ready</p>
+               <div className="p-10 bg-white rounded-full border-4 border-dashed border-slate-100">
+                 <ShoppingCart size={80} strokeWidth={0.5} />
+               </div>
+               <p className="mt-8 font-black text-xs uppercase tracking-[0.6em] text-slate-300">Station Ready</p>
              </div>
            ) : (
              cart.map(item => (
-               <div key={item.id} className="bg-slate-50/50 p-4 md:p-6 rounded-[2rem] border border-slate-100 group hover:border-indigo-500/30 hover:bg-white hover:shadow-xl transition-all flex flex-col gap-4">
-                 <div className="flex items-start justify-between">
-                   <div className="flex-1 min-w-0">
-                     <h4 className="text-sm md:text-base font-black text-slate-900 truncate">{item.name}</h4>
-                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Min: KSh {item.price.toLocaleString()}</p>
+               <div key={item.id} className="bg-white p-4 md:p-5 rounded-[2rem] border border-slate-100 group hover:border-indigo-500/30 hover:shadow-2xl hover:shadow-indigo-500/5 transition-all flex items-center gap-6">
+                 {/* Product Identity */}
+                 <div className="flex-1 min-w-0">
+                   <div className="flex items-center gap-2 mb-1">
+                     <span className="text-[8px] font-black text-indigo-500 uppercase px-1.5 py-0.5 bg-indigo-50 rounded-md">REF: {item.id.slice(0,4)}</span>
+                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Min: KSh {item.price.toLocaleString()}</p>
                    </div>
-                   <button onClick={() => setCart(prev => prev.filter(i => i.id !== item.id))} className="text-slate-300 hover:text-rose-500 p-2 hover:bg-rose-50 rounded-xl transition-all"><Trash2 size={18}/></button>
+                   <h4 className="text-sm md:text-base font-black text-slate-900 truncate leading-tight">{item.name}</h4>
                  </div>
 
-                 <div className="flex flex-wrap items-center justify-between gap-4">
-                   <div className="flex items-center bg-white rounded-xl p-1 border border-slate-200 shadow-sm">
-                     <button onClick={() => updateCartQuantity(item.id, -1)} className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-white transition-colors bg-slate-50 rounded-lg hover:bg-indigo-600"><Minus size={16}/></button>
-                     <span className="w-12 text-center text-slate-900 text-base font-black">{item.cartQuantity}</span>
-                     <button onClick={() => updateCartQuantity(item.id, 1)} className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-white transition-colors bg-slate-50 rounded-lg hover:bg-indigo-600"><Plus size={16}/></button>
-                   </div>
+                 {/* Quantity Controls */}
+                 <div className="flex items-center bg-slate-50 rounded-2xl p-1.5 border border-slate-100">
+                   <button onClick={() => updateCartQuantity(item.id, -1)} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors bg-white rounded-xl shadow-sm"><Minus size={18}/></button>
+                   <span className="w-14 text-center text-slate-900 text-lg font-black tabular-nums">{item.cartQuantity}</span>
+                   <button onClick={() => updateCartQuantity(item.id, 1)} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-colors bg-white rounded-xl shadow-sm"><Plus size={18}/></button>
+                 </div>
 
-                   <div className="flex-1 min-w-[150px]">
-                      <div className={`flex items-center bg-white rounded-xl px-4 py-2 border transition-all ${item.customPrice < item.price ? 'border-rose-500 bg-rose-50/30' : 'border-slate-200 focus-within:border-indigo-500'}`}>
-                        <Banknote size={14} className={item.customPrice < item.price ? 'text-rose-500' : 'text-slate-400'} />
-                        <input 
-                          type="number" 
-                          className="bg-transparent w-full text-slate-900 font-black text-sm outline-none ml-2"
-                          value={item.customPrice === 0 ? '' : item.customPrice}
-                          onBlur={() => validatePrice(item.id)}
-                          onChange={(e) => handlePriceChange(item.id, e.target.value)}
-                        />
-                      </div>
-                   </div>
+                 {/* Price Engine Input (WIDE) */}
+                 <div className="w-48 lg:w-56">
+                    <div className={`flex items-center bg-white rounded-2xl px-5 py-3.5 border-2 transition-all ${item.customPrice < item.price ? 'border-rose-500 bg-rose-50/30' : 'border-slate-100 focus-within:border-indigo-600 focus-within:shadow-xl focus-within:shadow-indigo-500/10'}`}>
+                      <span className="text-slate-400 font-black text-xs mr-2">KSh</span>
+                      <input 
+                        type="number" 
+                        className="bg-transparent w-full text-slate-900 font-black text-lg outline-none tabular-nums"
+                        value={item.customPrice === 0 ? '' : item.customPrice}
+                        onBlur={() => validatePrice(item.id)}
+                        onChange={(e) => handlePriceChange(item.id, e.target.value)}
+                      />
+                    </div>
+                 </div>
 
-                   <div className="text-right">
-                     <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Line Total</p>
+                 {/* Row Total & Delete */}
+                 <div className="flex items-center gap-6">
+                   <div className="text-right min-w-[120px]">
+                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Subtotal</p>
                      <p className="text-xl font-black text-indigo-600 tabular-nums leading-none">KSh {(item.customPrice * item.cartQuantity).toLocaleString()}</p>
                    </div>
+                   <button onClick={() => setCart(prev => prev.filter(i => i.id !== item.id))} className="text-slate-300 hover:text-rose-500 p-3 hover:bg-rose-50 rounded-2xl transition-all border border-transparent hover:border-rose-100"><Trash2 size={20}/></button>
                  </div>
                </div>
              ))
            )}
         </div>
 
-        {/* FIXED FOOTER: Always Visible Settlement Area */}
-        <div className="p-6 md:p-8 bg-slate-50 border-t border-slate-100 space-y-4 md:space-y-6 shrink-0 shadow-[0_-10px_30px_rgba(0,0,0,0.03)]">
-           <div className="flex justify-between items-center px-2">
-             <div className="space-y-0.5">
-               <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Gross Subtotal</p>
-               <p className="text-base font-black text-slate-600">KSh {cartSummary.subtotal.toLocaleString()}</p>
-             </div>
-             <div className="text-right space-y-0.5">
-               <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Computed Tax</p>
-               <p className="text-base font-black text-slate-600">KSh {cartSummary.taxAmount.toLocaleString()}</p>
-             </div>
-           </div>
-
-           <div className="bg-indigo-600/5 p-4 md:p-6 rounded-[2rem] border border-indigo-100 flex flex-col md:flex-row justify-between items-center gap-4">
-             <div className="text-center md:text-left flex-1">
-               <span className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.4em]">Settlement Balance</span>
-               <h2 className="text-4xl md:text-5xl lg:text-6xl font-black text-slate-900 tabular-nums tracking-tighter mt-1 leading-none">KSh {cartSummary.netTotal.toLocaleString()}</h2>
-             </div>
-             <div className="flex flex-col gap-2 w-full md:w-auto">
-                <div className="grid grid-cols-3 gap-1.5">
-                   <button onClick={() => setPaymentMethod('cash')} className={`py-3 px-4 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'cash' ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600'}`}>Cash</button>
-                   <button onClick={() => setPaymentMethod('card')} className={`py-3 px-4 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'card' ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600'}`}>Card</button>
-                   <button onClick={() => setPaymentMethod('mpesa')} className={`py-3 px-4 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'mpesa' ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600'}`}>Mpesa</button>
+        {/* FIXED FOOTER: Large Summary Area */}
+        <div className="px-10 py-8 bg-white border-t border-slate-100 space-y-6 shrink-0 shadow-[0_-20px_50px_rgba(0,0,0,0.04)]">
+           <div className="flex justify-between items-end px-4">
+             <div className="space-y-4">
+                <div className="flex gap-8">
+                  <div className="space-y-1">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Gross Subtotal</p>
+                    <p className="text-xl font-black text-slate-500 tabular-nums">KSh {cartSummary.subtotal.toLocaleString()}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Computed Tax</p>
+                    <p className="text-xl font-black text-slate-500 tabular-nums">KSh {cartSummary.taxAmount.toLocaleString()}</p>
+                  </div>
                 </div>
+                {/* Payment Methods */}
+                <div className="flex items-center gap-2">
+                   <button onClick={() => setPaymentMethod('cash')} className={`py-3 px-6 rounded-2xl border text-[10px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'cash' ? 'bg-slate-900 border-slate-900 text-white shadow-xl' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>Cash</button>
+                   <button onClick={() => setPaymentMethod('card')} className={`py-3 px-6 rounded-2xl border text-[10px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'card' ? 'bg-slate-900 border-slate-900 text-white shadow-xl' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>Card</button>
+                   <button onClick={() => setPaymentMethod('mpesa')} className={`py-3 px-6 rounded-2xl border text-[10px] font-black uppercase tracking-widest transition-all ${paymentMethod === 'mpesa' ? 'bg-slate-900 border-slate-900 text-white shadow-xl' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}>Mpesa</button>
+                </div>
+             </div>
+             
+             <div className="text-right">
+                <span className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.4em]">Settlement Balance</span>
+                <h2 className="text-5xl lg:text-7xl font-black text-slate-900 tabular-nums tracking-tighter mt-1 leading-none">KSh {cartSummary.netTotal.toLocaleString()}</h2>
              </div>
            </div>
 
            <button 
              onClick={handleCheckout} 
              disabled={cart.length === 0 || isProcessing || !isOnline} 
-             className="w-full py-6 md:py-8 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-[2rem] uppercase tracking-[0.4em] text-sm flex items-center justify-center gap-4 active:scale-[0.98] transition-all shadow-xl shadow-indigo-600/30 disabled:opacity-20"
+             className="w-full py-8 md:py-10 bg-indigo-600 hover:bg-indigo-700 text-white font-black rounded-[2.5rem] uppercase tracking-[0.5em] text-sm flex items-center justify-center gap-6 active:scale-[0.99] transition-all shadow-2xl shadow-indigo-600/30 disabled:opacity-20"
            >
-             {isProcessing ? <RefreshCw className="animate-spin" size={20} /> : <><CheckCircle2 size={24}/> Finalize Settlement</>}
+             {isProcessing ? <RefreshCw className="animate-spin" size={24} /> : <><CheckCircle2 size={32}/> Finalize Settlement</>}
            </button>
         </div>
       </div>
