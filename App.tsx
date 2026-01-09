@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { supabase } from './supabaseClient';
+import { supabase, clearAuthSession } from './supabaseClient';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import POS from './pages/POS';
@@ -11,192 +11,134 @@ import Suppliers from './pages/Suppliers';
 import Reports from './pages/Reports';
 import Shifts from './pages/Shifts';
 import Settings from './pages/Settings';
-import CompleteProfile from './pages/CompleteProfile';
 import Sidebar from './components/Sidebar';
 import { User, Settings as StoreSettings } from './types';
-import { Loader2, RefreshCcw, AlertCircle } from 'lucide-react';
+import { Loader2, LogOut, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [authUser, setAuthUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionError, setSessionError] = useState(false);
   const [settings, setSettings] = useState<StoreSettings | null>(null);
-  const [isProfileReady, setIsProfileReady] = useState(false);
-  const [showTimeoutUI, setShowTimeoutUI] = useState(false);
-  const timeoutRef = useRef<any>(null);
 
-  const clearSessionAndRestart = async () => {
-    console.warn("Clearing all local session data to fix sync issues...");
+  const syncProfile = useCallback(async (userId: string, email: string) => {
     try {
-      await supabase.auth.signOut();
-    } catch (e) {
-      // Ignore signout errors if token is already dead
-    }
-    // Clear all Supabase related local storage keys
-    Object.keys(localStorage).forEach(key => {
-      if (key.includes('sb-') || key.includes('supabase')) {
-        localStorage.removeItem(key);
-      }
-    });
-    // Also clear session storage just in case
-    sessionStorage.clear();
-    window.location.reload();
-  };
-
-  const checkProfile = useCallback(async (userId: string) => {
-    try {
-      const { data: profile, error: profileError } = await supabase
+      const { data: profile, error } = await supabase
         .from('users')
         .select('*')
         .eq('id', userId)
         .maybeSingle();
       
-      if (profileError) throw profileError;
-      
-      if (profile && profile.name) {
-        setUser(profile);
-        setIsProfileReady(true);
-        return true;
-      } else {
-        setUser(null);
-        setIsProfileReady(false);
-        return false;
+      if (error && error.message.includes('Refresh Token Not Found')) {
+        throw error;
       }
-    } catch (err) {
-      console.error("Error checking profile:", err);
-      return false;
+
+      if (profile) {
+        setUser(profile);
+      } else {
+        const { data: newProfile } = await supabase
+          .from('users')
+          .insert({
+            id: userId,
+            name: email.split('@')[0],
+            email: email,
+            role: 'admin',
+            password_hash: 'managed_by_supabase_auth'
+          })
+          .select()
+          .single();
+        
+        if (newProfile) setUser(newProfile);
+      }
+    } catch (err: any) {
+      console.error("Profile sync error:", err);
+      if (err.message?.includes('Refresh Token Not Found')) {
+        setSessionError(true);
+      } else {
+        setUser({ id: userId, name: email.split('@')[0], email, role: 'admin' });
+      }
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    const initialize = async () => {
-      // Start a timeout timer. If loading takes > 8s, show reset button.
-      timeoutRef.current = setTimeout(() => {
-        setLoading(prev => {
-          if (prev) setShowTimeoutUI(true);
-          return prev;
-        });
-      }, 8000);
-
-      try {
-        // Load database settings
-        const { data: sets } = await supabase.from('settings').select('*').maybeSingle();
-        if (sets) setSettings(sets);
-        
-        // Fetch session
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        
-        if (sessionError) {
-          console.error("Session initialization error:", sessionError);
-          // Explicitly handle "Refresh Token Not Found" or 400 errors by nuking the local session
-          if (
-            sessionError.message.toLowerCase().includes("refresh token") || 
-            sessionError.status === 400 ||
-            sessionError.status === 401
-          ) {
-            await clearSessionAndRestart();
-            return;
-          }
-        }
-
-        if (session?.user) {
-          setAuthUser(session.user);
-          const hasProfile = await checkProfile(session.user.id);
-          if (!hasProfile) {
-             setIsProfileReady(false);
-          }
-        } else {
-          setAuthUser(null);
-          setUser(null);
-        }
-      } catch (err: any) {
-        console.error("Initialization exception:", err);
-        // If we hit a snag during boot, checking if it's auth related
-        if (err.message?.toLowerCase().includes("refresh token")) {
-          await clearSessionAndRestart();
-          return;
-        }
-      } finally {
+  const initialize = useCallback(async () => {
+    setLoading(true);
+    setSessionError(false);
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error || (session && !session.user)) {
+        console.warn("Invalid session detected, clearing...");
+        await clearAuthSession();
         setLoading(false);
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        return;
       }
-    };
 
+      if (session?.user) {
+        setAuthUser(session.user);
+        await syncProfile(session.user.id, session.user.email || '');
+      } else {
+        setLoading(false);
+      }
+      
+      supabase.from('settings').select('*').maybeSingle().then(({ data }) => {
+        if (data) setSettings(data);
+      });
+    } catch (err) {
+      console.error("Initialization error:", err);
+      setLoading(false);
+    }
+  }, [syncProfile]);
+
+  useEffect(() => {
     initialize();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'TOKEN_REFRESHED') {
-        console.log('Auth token refreshed successfully');
+        console.log("Token refreshed successfully");
       }
-      
-      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+      if (event === 'SIGNED_IN' && session?.user) {
         setAuthUser(session.user);
-        await checkProfile(session.user.id);
-        setLoading(false);
+        await syncProfile(session.user.id, session.user.email || '');
       } else if (event === 'SIGNED_OUT') {
         setAuthUser(null);
         setUser(null);
-        setIsProfileReady(false);
         setLoading(false);
       }
     });
 
-    return () => {
-      subscription.unsubscribe();
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
-  }, [checkProfile]);
+    return () => subscription.unsubscribe();
+  }, [initialize, syncProfile]);
 
-  if (loading) {
+  if (sessionError) {
     return (
-      <div className="flex h-screen w-screen flex-col items-center justify-center bg-white gap-6 p-6">
-        <div className="relative">
-          <Loader2 className="w-16 h-16 text-blue-600 animate-spin" />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-2 h-2 bg-blue-600 rounded-full animate-ping"></div>
-          </div>
+      <div className="flex h-screen w-screen flex-col items-center justify-center bg-slate-50 p-6 text-center">
+        <div className="w-20 h-20 bg-rose-100 text-rose-600 rounded-3xl flex items-center justify-center mb-6">
+          <LogOut size={40} />
         </div>
-        
-        <div className="text-center space-y-2">
-          <p className="text-slate-900 font-black uppercase tracking-[0.2em] text-xs">Syncing Environment</p>
-          <p className="text-slate-400 text-[10px] font-medium max-w-[200px] mx-auto leading-relaxed">
-            Verifying secure tunnel and business parameters...
-          </p>
-        </div>
-
-        {showTimeoutUI && (
-          <div className="mt-8 p-6 bg-slate-50 border border-slate-100 rounded-[2rem] max-w-sm w-full space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500 shadow-sm">
-            <div className="flex items-start gap-3 text-slate-600">
-              <AlertCircle size={20} className="shrink-0 text-amber-500" />
-              <div className="space-y-1">
-                <p className="text-[11px] font-bold leading-relaxed">
-                  Session synchronization failed.
-                </p>
-                <p className="text-[10px] text-slate-500 font-medium">
-                  Your browser profile has a conflicting security token. This is common when tokens expire.
-                </p>
-              </div>
-            </div>
-            <button 
-              onClick={clearSessionAndRestart}
-              className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-black transition-all shadow-xl shadow-slate-200"
-            >
-              <RefreshCcw size={14} /> Repair Connection
-            </button>
-            <p className="text-center text-[9px] text-slate-400 font-medium">This mimics an incognito start to resolve token errors.</p>
-          </div>
-        )}
+        <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">Session Expired</h2>
+        <p className="text-slate-500 text-sm max-w-xs mt-2">Your security token has expired. Please sign in again to restore your data connection.</p>
+        <button 
+          onClick={() => { clearAuthSession(); window.location.reload(); }}
+          className="mt-8 px-8 py-4 bg-blue-600 text-white font-black text-xs uppercase tracking-[0.2em] rounded-2xl shadow-xl shadow-blue-500/20 active:scale-95 transition-all flex items-center gap-3"
+        >
+          <RefreshCw size={16} /> Re-Authenticate
+        </button>
       </div>
     );
   }
 
-  if (authUser && !isProfileReady) {
+  if (loading) {
     return (
-      <CompleteProfile 
-        authUserId={authUser.id} 
-        email={authUser.email || ''} 
-        onComplete={() => checkProfile(authUser.id)} 
-      />
+      <div className="flex h-screen w-screen flex-col items-center justify-center bg-white gap-6">
+        <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
+        <div className="text-center">
+          <p className="text-slate-900 font-black text-[10px] uppercase tracking-[0.4em]">Verifying Identity</p>
+          <p className="text-slate-400 text-[8px] font-bold uppercase tracking-widest mt-2 animate-pulse">Establishing secure handshake...</p>
+        </div>
+      </div>
     );
   }
 

@@ -10,7 +10,8 @@ import {
   Trash2, 
   AlertTriangle,
   Package,
-  X
+  X,
+  RefreshCw
 } from 'lucide-react';
 import { Product, Supplier } from '../types';
 
@@ -39,11 +40,16 @@ const Inventory: React.FC = () => {
 
   const fetchData = async () => {
     setLoading(true);
-    const { data: prods } = await supabase.from('products').select('*').order('name', { ascending: true });
-    const { data: sups } = await supabase.from('suppliers').select('*');
-    if (prods) setProducts(prods);
-    if (sups) setSuppliers(sups);
-    setLoading(false);
+    try {
+      const { data: prods } = await supabase.from('products').select('*').order('name', { ascending: true });
+      const { data: sups } = await supabase.from('suppliers').select('*');
+      if (prods) setProducts(prods);
+      if (sups) setSuppliers(sups);
+    } catch (error) {
+      console.error("Data sync failed:", error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -108,19 +114,28 @@ const Inventory: React.FC = () => {
 
   const categories = Array.from(new Set(products.map(p => p.category)));
 
+  if (loading) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-20 gap-4">
+        <RefreshCw className="w-10 h-10 text-blue-600 animate-spin opacity-20" />
+        <p className="text-[10px] font-black text-slate-300 uppercase tracking-[0.4em]">Restoring Inventory...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900">Inventory</h1>
-          <p className="text-slate-500">Real-time stock tracking and catalog management.</p>
+          <h1 className="text-3xl font-black text-slate-900 tracking-tight">Services Catalog</h1>
+          <p className="text-slate-500 font-medium">All registered items and services are listed below.</p>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={exportCSV} className="px-4 py-2 bg-white border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors font-bold text-sm flex items-center gap-2">
             <Download size={18} /> Export CSV
           </button>
           <button onClick={() => { setEditingProduct(null); setFormData({ name: '', category: '', price: 0, cost_price: 0, stock_quantity: 0, reorder_level: 5, supplier_id: '' }); setIsModalOpen(true); }} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-bold text-sm flex items-center gap-2 shadow-lg shadow-blue-500/20">
-            <Plus size={18} /> Add Product
+            <Plus size={18} /> Add New
           </button>
         </div>
       </header>
@@ -155,10 +170,10 @@ const Inventory: React.FC = () => {
         <table className="w-full text-left">
           <thead className="bg-slate-50 border-b border-slate-100">
             <tr>
-              <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Product Details</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Description</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Category</th>
-              <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Selling Price</th>
-              <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Stock Level</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Price</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Stock</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-right">Actions</th>
             </tr>
           </thead>
@@ -172,7 +187,7 @@ const Inventory: React.FC = () => {
                     </div>
                     <div>
                       <p className="font-bold text-slate-900">{product.name}</p>
-                      <p className="text-[10px] text-slate-400 uppercase tracking-widest">SKU: {product.id.slice(0, 8)}</p>
+                      <p className="text-[10px] text-slate-400 uppercase tracking-widest">ID: {product.id.slice(0, 8)}</p>
                     </div>
                   </div>
                 </td>
@@ -185,11 +200,6 @@ const Inventory: React.FC = () => {
                     <span className={`font-black text-lg ${product.stock_quantity <= product.reorder_level ? 'text-rose-600' : 'text-slate-900'}`}>
                       {product.stock_quantity}
                     </span>
-                    {product.stock_quantity <= product.reorder_level && (
-                      <div className="p-1 bg-rose-50 rounded-lg text-rose-500">
-                        <AlertTriangle size={14} />
-                      </div>
-                    )}
                   </div>
                 </td>
                 <td className="px-6 py-4 text-right">
@@ -209,7 +219,7 @@ const Inventory: React.FC = () => {
         {filteredProducts.length === 0 && !loading && (
           <div className="py-20 flex flex-col items-center justify-center text-slate-300">
             <Package size={48} className="mb-4 opacity-10" />
-            <p className="italic font-bold">No products found in inventory.</p>
+            <p className="italic font-bold">No records found. Data recovery inactive.</p>
           </div>
         )}
       </div>
@@ -218,29 +228,18 @@ const Inventory: React.FC = () => {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl w-full max-w-xl shadow-2xl overflow-hidden animate-in zoom-in duration-200">
             <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-xl font-bold text-slate-900 uppercase tracking-wider">{editingProduct ? 'Update Product' : 'Catalog New Item'}</h3>
+              <h3 className="text-xl font-bold text-slate-900 uppercase tracking-wider">{editingProduct ? 'Update Item' : 'Add To Catalog'}</h3>
               <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600 bg-slate-50 p-1 rounded-full"><X size={20} /></button>
             </div>
             <form onSubmit={handleSave} className="p-8 space-y-6">
               <div className="grid grid-cols-2 gap-5">
                 <div className="col-span-2">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Full Name</label>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Item Name</label>
                   <input required type="text" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Category</label>
-                  <input required type="text" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. Soda" value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Supplier</label>
-                  <select className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" value={formData.supplier_id} onChange={(e) => setFormData({...formData, supplier_id: e.target.value})}>
-                    <option value="">None</option>
-                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Cost Price (KSh)</label>
-                  <input required type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" value={formData.cost_price} onChange={(e) => setFormData({...formData, cost_price: Number(e.target.value)})} />
+                  <input required type="text" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. Services" value={formData.category} onChange={(e) => setFormData({...formData, category: e.target.value})} />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Selling Price (KSh)</label>
@@ -250,14 +249,10 @@ const Inventory: React.FC = () => {
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Stock Balance</label>
                   <input required type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" value={formData.stock_quantity} onChange={(e) => setFormData({...formData, stock_quantity: Number(e.target.value)})} />
                 </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">Reorder Alert Level</label>
-                  <input required type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" value={formData.reorder_level} onChange={(e) => setFormData({...formData, reorder_level: Number(e.target.value)})} />
-                </div>
               </div>
               <div className="pt-4 flex gap-3">
                 <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-4 bg-slate-100 text-slate-700 rounded-2xl font-bold">Cancel</button>
-                <button type="submit" className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg shadow-blue-500/20 active:scale-95 transition-all">Save Changes</button>
+                <button type="submit" className="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg shadow-blue-500/20 active:scale-95 transition-all">Save To Cloud</button>
               </div>
             </form>
           </div>
@@ -268,3 +263,4 @@ const Inventory: React.FC = () => {
 };
 
 export default Inventory;
+    

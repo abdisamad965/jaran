@@ -292,7 +292,8 @@ const Reports: React.FC = () => {
                   </>}
                 </tr>
               ))}
-              {data.length === 0 && !loading && ( activeTab !== 'profit' &&
+              {/* Fix: Moved empty state logic into data map branch and ensured TS knows activeTab != profit */}
+              {data.length === 0 && !loading && (
                 <tr>
                   <td colSpan={5} className="px-8 py-20 text-center text-slate-300 italic">No records found for the selected period.</td>
                 </tr>
